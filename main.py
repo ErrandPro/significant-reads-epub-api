@@ -1,65 +1,35 @@
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-import fitz  # PyMuPDF
-import pdfplumber
-from ebooklib import epub
-import io
+from fastapi.responses import FileResponse
+import tempfile
+import os
+
+from processor import extract_text_from_pdf, ocr_pdf_if_needed
+from epub_builder import build_epub
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
 @app.post("/convert")
-async def convert(
+async def convert_pdf(
     pdf: UploadFile = File(...),
     title: str = Form(...),
-    author: str = Form(...),
+    author: str = Form(...)
 ):
-    pdf_bytes = await pdf.read()
 
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pdf_path = os.path.join(tmpdir, pdf.filename)
 
-    book = epub.EpubBook()
-    book.set_title(title)
-    book.add_author(author)
+        with open(pdf_path, "wb") as f:
+            f.write(await pdf.read())
 
-    chapters = []
+        text = extract_text_from_pdf(pdf_path)
 
-    for i, page in enumerate(doc):
-        text = page.get_text()
+        if not text or len(text.strip()) < 50:
+            text = ocr_pdf_if_needed(pdf_path)
 
-        chapter = epub.EpubHtml(
-            title=f"Page {i+1}",
-            file_name=f"chap_{i+1}.xhtml",
-            lang="en"
+        epub_path = build_epub(text, title, author, tmpdir)
+
+        return FileResponse(
+            epub_path,
+            media_type="application/epub+zip",
+            filename=f"{title}.epub"
         )
-
-        chapter.content = f"<h2>Page {i+1}</h2><p>{text}</p>"
-        book.add_item(chapter)
-        chapters.append(chapter)
-
-    book.spine = ["nav"] + chapters
-    book.add_item(epub.EpubNcx())
-    book.add_item(epub.EpubNav())
-
-    output = io.BytesIO()
-    epub.write_epub(output, book)
-
-    output.seek(0)
-
-    return StreamingResponse(
-        output,
-        media_type="application/epub+zip",
-        headers={"Content-Disposition": f"attachment; filename={title}.epub"}
-    )
