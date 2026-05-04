@@ -1,6 +1,9 @@
 fastapi
 uvicorn
-pymupdf
-pdfplumber
-ebooklib
 python-multipart
+pdfminer.six
+pymupdf
+pillow
+pytesseract
+pdf2image
+ebooklib
