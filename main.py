@@ -7,7 +7,9 @@ from processor import extract_text_from_pdf, ocr_pdf_if_needed
 from epub_builder import build_epub
 
 app = FastAPI()
-
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 @app.post("/convert")
 async def convert_pdf(
     pdf: UploadFile = File(...),
