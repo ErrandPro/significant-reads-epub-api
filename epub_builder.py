@@ -26,10 +26,11 @@ def build_epub(text, title, author, out_dir):
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <title>{safe_chap_title}</title>
-  <style>
-    body {{ font-family: Georgia, serif; margin: 3em 2em; line-height: 1.8; color: #222; }}
-    h1 {{ font-size: 1.4em; font-weight: bold; margin-bottom: 1.2em; border-bottom: 1px solid #ccc; padding-bottom: 0.4em; }}
-    p {{ margin: 0.6em 0; text-indent: 1.5em; }}
+ <style>
+    body {{ font-family: Arial, sans-serif; margin: 0pt 14pt; line-height: 120%; color: #000; font-size: 1.09em; }}
+    h1 {{ font-size: 1.4em; font-weight: bold; margin: 28pt 0pt; text-align: center; line-height: 120%; }}
+    h2 {{ font-size: 1.2em; font-weight: bold; margin: 14pt 0pt; text-align: center; line-height: 120%; }}
+    p {{ margin: 0pt 0pt 8.5pt; text-indent: 14pt; text-align: justify; line-height: 120%; widows: 0; orphans: 0; }}
   </style>
 </head>
 <body>
@@ -88,14 +89,11 @@ def build_epub(text, title, author, out_dir):
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>Table of Contents</title>
-<style>
-  body {{ font-family: Georgia, serif; margin: 3em 2em; }}
-  h1 {{ font-size: 1.5em; margin-bottom: 1em; }}
+body {{ font-family: Arial, sans-serif; margin: 2em 1em; }}
+  h1 {{ font-size: 1.4em; font-weight: bold; margin-bottom: 1em; text-align: center; }}
   ul {{ list-style: none; padding: 0; }}
-  li {{ margin: 0.6em 0; padding: 0.3em 0; border-bottom: 1px solid #eee; }}
-  a {{ text-decoration: none; color: #333; font-size: 1em; }}
-  a:hover {{ color: #000; }}
-</style>
+  li {{ margin: 0.5em 0; padding: 0.4em 0; border-bottom: 1px solid #ddd; }}
+  a {{ text-decoration: none; color: #000; font-size: 1.05em; }}
 </head>
 <body>
   <h1>Table of Contents</h1>
