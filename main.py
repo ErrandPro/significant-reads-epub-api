@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile
 import os
@@ -49,10 +49,15 @@ async def convert_pdf(
             raise HTTPException(status_code=500, detail=f"EPUB build failed: {str(e)}")
 
         if not os.path.exists(epub_path):
-            raise HTTPException(status_code=500, detail=f"EPUB file was not created at {epub_path}")
+            raise HTTPException(status_code=500, detail="EPUB file was not created")
 
-        return FileResponse(
-            epub_path,
-            media_type="application/epub+zip",
-            filename=f"{title}.epub"
-        )
+        # Read file into memory BEFORE temp directory is deleted
+        with open(epub_path, "rb") as f:
+            epub_bytes = f.read()
+
+    safe_title = title.replace(" ", "_")
+    return Response(
+        content=epub_bytes,
+        media_type="application/epub+zip",
+        headers={"Content-Disposition": f"attachment; filename={safe_title}.epub"}
+    )
