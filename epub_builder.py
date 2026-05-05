@@ -4,6 +4,46 @@ import zipfile
 from processor import extract_chapters_from_text
 
 
+def smart_join_paragraphs(text):
+    """Join PDF lines into real paragraphs, handling both normal and dense-blank PDFs."""
+    lines = [l.rstrip() for l in text.split('\n')]
+
+    content_count = sum(1 for l in lines if l.strip())
+    blank_count = sum(1 for l in lines if not l.strip())
+
+    # If blanks appear after nearly every line, pdfminer is inserting blanks per visual line
+    dense_blank_mode = (content_count > 0 and blank_count > content_count * 0.4)
+
+    paras = []
+    current_words = []
+    prev_ended_sentence = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if not stripped:
+            if not dense_blank_mode and current_words:
+                paras.append(' '.join(current_words))
+                current_words = []
+            continue
+
+        if dense_blank_mode:
+            # Break paragraph when previous line ended a sentence AND this line starts uppercase
+            if current_words and prev_ended_sentence and stripped[0].isupper():
+                paras.append(' '.join(current_words))
+                current_words = []
+            current_words.append(stripped)
+            clean_end = stripped.rstrip(' "\'»)')
+            prev_ended_sentence = bool(clean_end and clean_end[-1] in '.!?')
+        else:
+            current_words.append(stripped)
+
+    if current_words:
+        paras.append(' '.join(current_words))
+
+    return paras if paras else [text.strip()]
+
+
 def build_epub(text, title, author, out_dir):
     safe_title = re.sub(r'[^\w\s-]', '', title).strip()
     safe_title = re.sub(r'\s+', '_', safe_title)
@@ -21,23 +61,8 @@ def build_epub(text, title, author, out_dir):
         safe_content = clean_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         safe_chap_title = chap_title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-        # Join PDF lines into real paragraphs (blank line = paragraph break)
-        raw_lines = safe_content.split('\n')
-        para_blocks = []
-        current = []
-        for line in raw_lines:
-            stripped = line.strip()
-            if stripped:
-                current.append(stripped)
-            else:
-                if current:
-                    para_blocks.append(' '.join(current))
-                    current = []
-        if current:
-            para_blocks.append(' '.join(current))
-        if not para_blocks:
-            para_blocks = [safe_content.strip()]
-        paragraphs = '\n'.join(f'<p>{block}</p>' for block in para_blocks if block)
+        para_blocks = smart_join_paragraphs(safe_content)
+        paragraphs = '\n'.join(f'<p>{block}</p>' for block in para_blocks if block.strip())
 
         xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
