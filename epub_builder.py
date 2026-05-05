@@ -16,7 +16,9 @@ def build_epub(text, title, author, out_dir):
 
     chapter_files = []
     for i, (chap_title, chap_content) in enumerate(chapters):
-        safe_content = chap_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        # Strip invalid XML control characters (form feed, vertical tab, etc.)
+        clean_content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', chap_content)
+        safe_content = clean_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         safe_chap_title = chap_title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
         # Join PDF lines into real paragraphs (blank line = paragraph break)
