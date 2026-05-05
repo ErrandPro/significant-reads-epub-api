@@ -18,15 +18,31 @@ def build_epub(text, title, author, out_dir):
     for i, (chap_title, chap_content) in enumerate(chapters):
         safe_content = chap_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         safe_chap_title = chap_title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        paragraphs = '\n'.join(
-            f'<p>{p.strip()}</p>' for p in safe_content.split('\n') if p.strip()
-        )
+
+        # Join PDF lines into real paragraphs (blank line = paragraph break)
+        raw_lines = safe_content.split('\n')
+        para_blocks = []
+        current = []
+        for line in raw_lines:
+            stripped = line.strip()
+            if stripped:
+                current.append(stripped)
+            else:
+                if current:
+                    para_blocks.append(' '.join(current))
+                    current = []
+        if current:
+            para_blocks.append(' '.join(current))
+        if not para_blocks:
+            para_blocks = [safe_content.strip()]
+        paragraphs = '\n'.join(f'<p>{block}</p>' for block in para_blocks if block)
+
         xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <title>{safe_chap_title}</title>
- <style>
+  <style>
     body {{ font-family: Arial, sans-serif; margin: 0pt 14pt; line-height: 120%; color: #000; font-size: 1.09em; }}
     h1 {{ font-size: 1.4em; font-weight: bold; margin: 28pt 0pt; text-align: center; line-height: 120%; }}
     h2 {{ font-size: 1.2em; font-weight: bold; margin: 14pt 0pt; text-align: center; line-height: 120%; }}
@@ -89,11 +105,13 @@ def build_epub(text, title, author, out_dir):
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>Table of Contents</title>
-body {{ font-family: Arial, sans-serif; margin: 2em 1em; }}
+<style>
+  body {{ font-family: Arial, sans-serif; margin: 2em 1em; }}
   h1 {{ font-size: 1.4em; font-weight: bold; margin-bottom: 1em; text-align: center; }}
   ul {{ list-style: none; padding: 0; }}
   li {{ margin: 0.5em 0; padding: 0.4em 0; border-bottom: 1px solid #ddd; }}
   a {{ text-decoration: none; color: #000; font-size: 1.05em; }}
+</style>
 </head>
 <body>
   <h1>Table of Contents</h1>
