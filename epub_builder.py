@@ -2,33 +2,109 @@ import os
 import re
 import zipfile
 
-def build_epub(text, title, author, out_dir):
+def detect_chapters(text):
+    lines = text.split('\n')
+    chapters = []
+    current_title = "Introduction"
+    current_content = []
 
+    chapter_pattern = re.compile(
+        r'^\s*(chapter\s+[\divxlcdmIVXLCDM]+[\s:\-–—]*.*|'
+        r'[\divxlcdmIVXLCDM]+\.\s+[A-Z].*|'
+        r'CHAPTER\s+[\divxlcdmIVXLCDM]+.*|'
+        r'[A-Z][A-Z\s]{5,}$)',
+        re.IGNORECASE
+    )
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            current_content.append('')
+            continue
+
+        if chapter_pattern.match(stripped) and len(stripped) < 100:
+            if current_content and any(c.strip() for c in current_content):
+                chapters.append((current_title, '\n'.join(current_content).strip()))
+            current_title = stripped
+            current_content = []
+        else:
+            current_content.append(stripped)
+
+    if current_content and any(c.strip() for c in current_content):
+        chapters.append((current_title, '\n'.join(current_content).strip()))
+
+    # If no chapters detected, split into chunks of 3000 chars
+    if len(chapters) <= 1:
+        chunks = []
+        words = text.split()
+        chunk = []
+        count = 0
+        part = 1
+        for word in words:
+            chunk.append(word)
+            count += 1
+            if count >= 500:
+                chunks.append((f"Part {part}", ' '.join(chunk)))
+                chunk = []
+                count = 0
+                part += 1
+        if chunk:
+            chunks.append((f"Part {part}", ' '.join(chunk)))
+        return chunks
+
+    return chapters
+
+
+def build_epub(text, title, author, out_dir):
     safe_title = re.sub(r'[^\w\s-]', '', title).strip()
     safe_title = re.sub(r'\s+', '_', safe_title)
     output = os.path.join(out_dir, f"{safe_title}.epub")
 
-    chapters = [c.strip() for c in text.split("\n\n") if c.strip()]
+    chapters = detect_chapters(text)
+
     if not chapters:
-        chapters = ["No content could be extracted from this PDF."]
+        chapters = [("Content", text or "No content could be extracted.")]
 
     chapter_files = []
-    for i, c in enumerate(chapters):
-        safe_c = c.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        chapter_files.append((f"chap_{i+1}.xhtml", f"""<?xml version="1.0" encoding="utf-8"?>
+    for i, (chap_title, chap_content) in enumerate(chapters):
+        safe_content = chap_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        paragraphs = '\n'.join(
+            f'<p>{p.strip()}</p>' for p in safe_content.split('\n') if p.strip()
+        )
+        safe_chap_title = chap_title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
-<head><title>Chapter {i+1}</title></head>
-<body><h1>Chapter {i+1}</h1><p>{safe_c}</p></body>
-</html>"""))
+<head>
+  <title>{safe_chap_title}</title>
+  <style>
+    body {{ font-family: Georgia, serif; margin: 2em; line-height: 1.6; }}
+    h1 {{ font-size: 1.4em; margin-bottom: 1em; }}
+    p {{ margin: 0.8em 0; text-indent: 1.5em; }}
+  </style>
+</head>
+<body>
+  <h1>{safe_chap_title}</h1>
+  {paragraphs}
+</body>
+</html>"""
+        chapter_files.append((f"chap_{i+1:02d}.xhtml", safe_chap_title, xhtml))
 
-    manifest_items = '\n'.join(
+    manifest_items = '\n    '.join(
         f'<item id="chap{i+1}" href="{fname}" media-type="application/xhtml+xml"/>'
-        for i, (fname, _) in enumerate(chapter_files)
+        for i, (fname, _, __) in enumerate(chapter_files)
     )
-    spine_items = '\n'.join(
+    spine_items = '\n    '.join(
         f'<itemref idref="chap{i+1}"/>'
         for i in range(len(chapter_files))
+    )
+    toc_nav_points = '\n    '.join(
+        f'<navPoint id="np{i+1}" playOrder="{i+1}"><navLabel><text>{chap_title}</text></navLabel><content src="{fname}"/></navPoint>'
+        for i, (fname, chap_title, _) in enumerate(chapter_files)
+    )
+    toc_links = '\n'.join(
+        f'<li><a href="{fname}">{chap_title}</a></li>'
+        for fname, chap_title, _ in chapter_files
     )
 
     opf = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -41,9 +117,11 @@ def build_epub(text, title, author, out_dir):
   </metadata>
   <manifest>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="toc" href="toc.xhtml" media-type="application/xhtml+xml"/>
     {manifest_items}
   </manifest>
   <spine toc="ncx">
+    <itemref idref="toc"/>
     {spine_items}
   </spine>
 </package>"""
@@ -53,9 +131,29 @@ def build_epub(text, title, author, out_dir):
   <head><meta name="dtb:uid" content="id-{safe_title}"/></head>
   <docTitle><text>{title}</text></docTitle>
   <navMap>
-    {''.join(f'<navPoint id="np{i+1}" playOrder="{i+1}"><navLabel><text>Chapter {i+1}</text></navLabel><content src="{fname}"/></navPoint>' for i, (fname, _) in enumerate(chapter_files))}
+    {toc_nav_points}
   </navMap>
 </ncx>"""
+
+    toc_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Table of Contents</title>
+<style>
+  body {{ font-family: Georgia, serif; margin: 2em; }}
+  h1 {{ font-size: 1.5em; margin-bottom: 1em; }}
+  ul {{ list-style: none; padding: 0; }}
+  li {{ margin: 0.5em 0; }}
+  a {{ text-decoration: none; color: #333; }}
+</style>
+</head>
+<body>
+  <h1>Table of Contents</h1>
+  <ul>
+    {toc_links}
+  </ul>
+</body>
+</html>"""
 
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
@@ -67,7 +165,8 @@ def build_epub(text, title, author, out_dir):
 </container>""")
         zf.writestr("OEBPS/content.opf", opf)
         zf.writestr("OEBPS/toc.ncx", ncx)
-        for fname, content in chapter_files:
-            zf.writestr(f"OEBPS/{fname}", content)
+        zf.writestr("OEBPS/toc.xhtml", toc_xhtml)
+        for fname, _, xhtml in chapter_files:
+            zf.writestr(f"OEBPS/{fname}", xhtml)
 
     return output
