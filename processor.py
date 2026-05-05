@@ -20,58 +20,111 @@ def ocr_pdf_if_needed(pdf_path: str) -> str:
     return "\n".join(text)
 
 
+def clean_line(line: str) -> str:
+    """Remove page numbers and junk lines."""
+    stripped = line.strip()
+    # Remove standalone roman numerals (i, ii, iii ... xxv)
+    if re.match(r'^[ivxlcdmIVXLCDM]{1,6}$', stripped):
+        return ''
+    # Remove standalone arabic page numbers
+    if re.match(r'^\d{1,3}$', stripped):
+        return ''
+    return stripped
+
+
+def is_main_chapter_heading(line: str) -> tuple:
+    """
+    Returns (True, title) if line is a MAIN chapter heading.
+    Main chapters look like:
+      - "Chapter 1" or "1" followed by a title on next line
+      - Named sections: Foreword, Introduction, Endorsements, Dedication, Acknowledgements
+    """
+    stripped = line.strip()
+
+    # Named front/back matter sections
+    named = ['foreword', 'introduction', 'endorsements', 'dedication',
+             'acknowledgements', 'conclusion', 'preface', 'contents']
+    if stripped.lower() in named:
+        return True, stripped.title()
+
+    # "Chapter N" pattern
+    if re.match(r'^chapter\s+\d+', stripped, re.IGNORECASE):
+        return True, stripped
+
+    return False, None
+
+
 def extract_chapters_from_text(text: str):
     """
-    Detects chapters using multiple strategies.
+    Extracts real chapters from the book text.
     Returns list of (title, content) tuples.
     """
     lines = text.split('\n')
+
+    # Clean all lines first
+    cleaned = []
+    for line in lines:
+        c = clean_line(line)
+        cleaned.append(c)
+
     chapters = []
-    current_title = None
+    current_title = "Front Matter"
     current_content = []
-
-    # Strategy 1: numbered chapter pattern
-    # Matches: "Chapter 1", "CHAPTER ONE", "1.", "I.", standalone numbers followed by title
-    chapter_patterns = [
-        re.compile(r'^chapter\s+\d+[\s:\-–—]*(.+)?$', re.IGNORECASE),
-        re.compile(r'^chapter\s+[ivxlcdmIVXLCDM]+[\s:\-–—]*(.+)?$', re.IGNORECASE),
-        re.compile(r'^\d+\.\s+[A-Z].+$'),
-        re.compile(r'^[IVXLCDM]+\.\s+[A-Z].+$'),
-    ]
-
-    # Strategy 2: ALL CAPS lines that look like titles (5+ words or meaningful)
-    section_pattern = re.compile(r'^[A-Z][A-Z\s\-]{8,}$')
-
     i = 0
-    while i < len(lines):
-        line = lines[i].strip()
+
+    while i < len(cleaned):
+        line = cleaned[i]
 
         if not line:
             current_content.append('')
             i += 1
             continue
 
-        is_chapter = any(p.match(line) for p in chapter_patterns)
-        is_section = section_pattern.match(line) and len(line.split()) >= 3
+        is_heading, heading_title = is_main_chapter_heading(line)
 
-        if is_chapter or is_section:
+        if is_heading:
             # Save previous chapter
-            if current_title and any(c.strip() for c in current_content):
-                chapters.append((current_title, '\n'.join(current_content).strip()))
-            current_title = line
+            content_text = '\n'.join(current_content).strip()
+            if content_text:
+                chapters.append((current_title, content_text))
+            current_title = heading_title
             current_content = []
-        else:
-            if current_title is None:
-                current_title = "Front Matter"
-            current_content.append(line)
+            i += 1
+            continue
 
+        # Check for numbered chapter pattern:
+        # A standalone digit on one line, followed by a title line
+        # e.g. line="1", next line="My Salvation Journey"
+        if re.match(r'^\d+$', line) and i + 1 < len(cleaned):
+            next_line = cleaned[i + 1].strip()
+            # Next line should look like a title (starts with capital, not too long)
+            if next_line and next_line[0].isupper() and len(next_line) < 80 and not next_line.endswith('.'):
+                # Check the line after that — if it's also a short title continuation
+                title = next_line
+                if i + 2 < len(cleaned):
+                    after = cleaned[i + 2].strip()
+                    if after and after[0].isupper() and len(after) < 60 and not after.endswith('.') and not re.match(r'^\d+$', after):
+                        # Could be two-line title
+                        title = next_line + ' ' + after
+                        i += 1  # skip the extra title line
+
+                content_text = '\n'.join(current_content).strip()
+                if content_text:
+                    chapters.append((current_title, content_text))
+                current_title = title
+                current_content = []
+                i += 2
+                continue
+
+        current_content.append(line)
         i += 1
 
     # Save last chapter
-    if current_title and any(c.strip() for c in current_content):
-        chapters.append((current_title, '\n'.join(current_content).strip()))
+    content_text = '\n'.join(current_content).strip()
+    if content_text:
+        chapters.append((current_title, content_text))
 
-    # Fallback: if still no good chapters, split by word count
+    # If we got very few chapters, fall back to word-count splitting
     if len(chapters) <= 2:
         return split_by_wordcount(text)
 
