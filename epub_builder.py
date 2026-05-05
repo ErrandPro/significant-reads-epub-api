@@ -1,58 +1,7 @@
 import os
 import re
 import zipfile
-
-def detect_chapters(text):
-    lines = text.split('\n')
-    chapters = []
-    current_title = "Introduction"
-    current_content = []
-
-    chapter_pattern = re.compile(
-        r'^\s*(chapter\s+[\divxlcdmIVXLCDM]+[\s:\-–—]*.*|'
-        r'[\divxlcdmIVXLCDM]+\.\s+[A-Z].*|'
-        r'CHAPTER\s+[\divxlcdmIVXLCDM]+.*|'
-        r'[A-Z][A-Z\s]{5,}$)',
-        re.IGNORECASE
-    )
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            current_content.append('')
-            continue
-
-        if chapter_pattern.match(stripped) and len(stripped) < 100:
-            if current_content and any(c.strip() for c in current_content):
-                chapters.append((current_title, '\n'.join(current_content).strip()))
-            current_title = stripped
-            current_content = []
-        else:
-            current_content.append(stripped)
-
-    if current_content and any(c.strip() for c in current_content):
-        chapters.append((current_title, '\n'.join(current_content).strip()))
-
-    # If no chapters detected, split into chunks of 3000 chars
-    if len(chapters) <= 1:
-        chunks = []
-        words = text.split()
-        chunk = []
-        count = 0
-        part = 1
-        for word in words:
-            chunk.append(word)
-            count += 1
-            if count >= 500:
-                chunks.append((f"Part {part}", ' '.join(chunk)))
-                chunk = []
-                count = 0
-                part += 1
-        if chunk:
-            chunks.append((f"Part {part}", ' '.join(chunk)))
-        return chunks
-
-    return chapters
+from processor import extract_chapters_from_text
 
 
 def build_epub(text, title, author, out_dir):
@@ -60,7 +9,7 @@ def build_epub(text, title, author, out_dir):
     safe_title = re.sub(r'\s+', '_', safe_title)
     output = os.path.join(out_dir, f"{safe_title}.epub")
 
-    chapters = detect_chapters(text)
+    chapters = extract_chapters_from_text(text)
 
     if not chapters:
         chapters = [("Content", text or "No content could be extracted.")]
@@ -68,19 +17,19 @@ def build_epub(text, title, author, out_dir):
     chapter_files = []
     for i, (chap_title, chap_content) in enumerate(chapters):
         safe_content = chap_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        safe_chap_title = chap_title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         paragraphs = '\n'.join(
             f'<p>{p.strip()}</p>' for p in safe_content.split('\n') if p.strip()
         )
-        safe_chap_title = chap_title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <title>{safe_chap_title}</title>
   <style>
-    body {{ font-family: Georgia, serif; margin: 2em; line-height: 1.6; }}
-    h1 {{ font-size: 1.4em; margin-bottom: 1em; }}
-    p {{ margin: 0.8em 0; text-indent: 1.5em; }}
+    body {{ font-family: Georgia, serif; margin: 3em 2em; line-height: 1.8; color: #222; }}
+    h1 {{ font-size: 1.4em; font-weight: bold; margin-bottom: 1.2em; border-bottom: 1px solid #ccc; padding-bottom: 0.4em; }}
+    p {{ margin: 0.6em 0; text-indent: 1.5em; }}
   </style>
 </head>
 <body>
@@ -140,11 +89,12 @@ def build_epub(text, title, author, out_dir):
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>Table of Contents</title>
 <style>
-  body {{ font-family: Georgia, serif; margin: 2em; }}
+  body {{ font-family: Georgia, serif; margin: 3em 2em; }}
   h1 {{ font-size: 1.5em; margin-bottom: 1em; }}
   ul {{ list-style: none; padding: 0; }}
-  li {{ margin: 0.5em 0; }}
-  a {{ text-decoration: none; color: #333; }}
+  li {{ margin: 0.6em 0; padding: 0.3em 0; border-bottom: 1px solid #eee; }}
+  a {{ text-decoration: none; color: #333; font-size: 1em; }}
+  a:hover {{ color: #000; }}
 </style>
 </head>
 <body>
@@ -156,7 +106,8 @@ def build_epub(text, title, author, out_dir):
 </html>"""
 
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        zf.writestr("mimetype", "application/epub+zip",
+                    compress_type=zipfile.ZIP_STORED)
         zf.writestr("META-INF/container.xml", """<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
