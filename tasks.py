@@ -10,14 +10,20 @@ logger = logging.getLogger(__name__)
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
-celery_app = Celery("converter", broker=REDIS_URL, backend=REDIS_URL)
+# Strip query params — SSL handled via broker_use_ssl config below
+_clean_url = REDIS_URL.split("?")[0]
+
+celery_app = Celery("converter", broker=_clean_url, backend=_clean_url)
 celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
-    task_acks_late=True,           # Re-queue if worker crashes mid-task
-    worker_prefetch_multiplier=1,  # Prevent hoarding large jobs
+    task_acks_late=True,
+    worker_prefetch_multiplier=1,
     task_track_started=True,
+    broker_use_ssl={"ssl_cert_reqs": None},
+    redis_backend_use_ssl={"ssl_cert_reqs": None},
+    broker_connection_retry_on_startup=True,
 )
 
 
@@ -31,8 +37,8 @@ def _update(job_id: str, **kwargs):
     bind=True,
     max_retries=2,
     default_retry_delay=10,
-    soft_time_limit=300,   # 5 min — raises SoftTimeLimitExceeded
-    time_limit=360,        # 6 min hard kill
+    soft_time_limit=300,
+    time_limit=360,
 )
 def convert_pdf_task(self, job_id: str, pdf_path: str, title: str, author: str):
     """
@@ -77,7 +83,6 @@ def convert_pdf_task(self, job_id: str, pdf_path: str, title: str, author: str):
         except self.MaxRetriesExceededError:
             _update(job_id, status=JobStatus.FAILED, error=f"Max retries exceeded: {exc}")
     finally:
-        # Always clean up the raw PDF upload
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
 
@@ -109,17 +114,16 @@ def _extract_text(pdf_path: str, job_id: str) -> str:
 
 
 def _pymupdf_extract(pdf_path: str) -> str:
-    """Extract text via PyMuPDF (fitz) with layout-aware ordering."""
-    import fitz  # PyMuPDF
+    """Extract text via PyMuPDF with layout-aware ordering."""
+    import fitz
 
     doc = fitz.open(pdf_path)
     pages = []
     for page in doc:
-        # "dict" mode preserves reading order better than plain text()
         blocks = page.get_text("dict", sort=True)["blocks"]
         page_text = []
         for block in blocks:
-            if block.get("type") == 0:  # text block
+            if block.get("type") == 0:
                 for line in block.get("lines", []):
                     line_text = " ".join(
                         span["text"] for span in line.get("spans", [])
