@@ -1,6 +1,7 @@
 import os
 import logging
 import time
+import ssl
 from celery import Celery
 from store import set_job, get_job, JobStatus
 from processor import extract_text_from_pdf, ocr_pdf_if_needed
@@ -10,21 +11,22 @@ logger = logging.getLogger(__name__)
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
-# Strip query params — SSL handled via broker_use_ssl config below
-_clean_url = REDIS_URL.split("?")[0]
+_ssl_options = {"ssl_cert_reqs": ssl.CERT_NONE}
 
-celery_app = Celery("converter", broker=_clean_url, backend=_clean_url)
-celery_app.conf.update(
-    task_serializer="json",
-    result_serializer="json",
-    accept_content=["json"],
-    task_acks_late=True,
-    worker_prefetch_multiplier=1,
-    task_track_started=True,
-    broker_use_ssl={"ssl_cert_reqs": None},
-    redis_backend_use_ssl={"ssl_cert_reqs": None},
-    broker_connection_retry_on_startup=True,
-)
+celery_app = Celery("converter")
+celery_app.config_from_object({
+    "broker_url": REDIS_URL,
+    "result_backend": REDIS_URL,
+    "broker_use_ssl": _ssl_options,
+    "redis_backend_use_ssl": _ssl_options,
+    "task_serializer": "json",
+    "result_serializer": "json",
+    "accept_content": ["json"],
+    "task_acks_late": True,
+    "worker_prefetch_multiplier": 1,
+    "task_track_started": True,
+    "broker_connection_retry_on_startup": True,
+})
 
 
 def _update(job_id: str, **kwargs):
@@ -41,12 +43,6 @@ def _update(job_id: str, **kwargs):
     time_limit=360,
 )
 def convert_pdf_task(self, job_id: str, pdf_path: str, title: str, author: str):
-    """
-    Three-stage extraction pipeline:
-      1. PyMuPDF  — fast, preserves layout
-      2. pdfminer — slower, better for complex fonts
-      3. Tesseract OCR — scanned / image PDFs
-    """
     t0 = time.time()
     out_dir = f"/tmp/epub_out_{job_id}"
     os.makedirs(out_dir, exist_ok=True)
@@ -88,9 +84,6 @@ def convert_pdf_task(self, job_id: str, pdf_path: str, title: str, author: str):
 
 
 def _extract_text(pdf_path: str, job_id: str) -> str:
-    """Try extraction methods in order, falling back as needed."""
-
-    # Stage 1: PyMuPDF — fastest, best layout preservation
     try:
         text = _pymupdf_extract(pdf_path)
         if text and len(text.strip()) > 100:
@@ -99,7 +92,6 @@ def _extract_text(pdf_path: str, job_id: str) -> str:
     except Exception as e:
         logger.warning(f"job_id={job_id} pymupdf_failed={e}")
 
-    # Stage 2: pdfminer — better with complex fonts/encoding
     try:
         text = extract_text_from_pdf(pdf_path)
         if text and len(text.strip()) > 100:
@@ -108,13 +100,11 @@ def _extract_text(pdf_path: str, job_id: str) -> str:
     except Exception as e:
         logger.warning(f"job_id={job_id} pdfminer_failed={e}")
 
-    # Stage 3: Tesseract OCR — scanned / image-only PDFs
     logger.info(f"job_id={job_id} extractor=ocr")
     return ocr_pdf_if_needed(pdf_path)
 
 
 def _pymupdf_extract(pdf_path: str) -> str:
-    """Extract text via PyMuPDF with layout-aware ordering."""
     import fitz
 
     doc = fitz.open(pdf_path)
