@@ -1,13 +1,27 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import Response
-from fastapi.middleware.cors import CORSMiddleware
-import tempfile
 import os
+import uuid
+import logging
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+import tempfile
 
-from processor import extract_text_from_pdf, ocr_pdf_if_needed
-from epub_builder import build_epub
+from tasks import convert_pdf_task
+from store import get_job, set_job, JobStatus
 
-app = FastAPI()
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"time":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}',
+)
+logger = logging.getLogger(__name__)
+
+limiter = Limiter(key_func=get_remote_address)
+app = FastAPI(title="PDF→EPUB API", version="3.0.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,48 +30,84 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": "3.0.0"}
+
+
+@app.get("/ready")
+def ready():
+    """Readiness check — verifies Redis/Celery broker is reachable."""
+    try:
+        from tasks import celery_app
+        celery_app.control.inspect(timeout=1).ping()
+        return {"status": "ready"}
+    except Exception as e:
+        logger.error(f"Readiness check failed: {e}")
+        raise HTTPException(status_code=503, detail="Worker unavailable")
+
 
 @app.post("/convert")
+@limiter.limit("10/minute")
 async def convert_pdf(
+    request: Request,
     pdf: UploadFile = File(...),
     title: str = Form(...),
-    author: str = Form(...)
+    author: str = Form(...),
 ):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        pdf_path = os.path.join(tmpdir, "input.pdf")
+    """
+    Accepts a PDF and enqueues an async conversion job.
+    Returns a job_id immediately — poll /status/{job_id} for progress.
+    """
+    if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="File must be a PDF.")
 
-        with open(pdf_path, "wb") as f:
-            f.write(await pdf.read())
+    raw = await pdf.read()
+    if len(raw) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="PDF exceeds 50 MB limit.")
 
-        try:
-            text = extract_text_from_pdf(pdf_path)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Text extraction failed: {str(e)}")
+    job_id = str(uuid.uuid4())
+    logger.info(f"job_id={job_id} filename={pdf.filename} size={len(raw)}")
 
-        if not text or len(text.strip()) < 50:
-            try:
-                text = ocr_pdf_if_needed(pdf_path)
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
+    # Write PDF to a stable temp path Celery worker can read
+    tmp_path = f"/tmp/pdf_in_{job_id}.pdf"
+    with open(tmp_path, "wb") as f:
+        f.write(raw)
 
-        try:
-            epub_path = build_epub(text, title, author, tmpdir)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"EPUB build failed: {str(e)}")
+    set_job(job_id, {"status": JobStatus.QUEUED, "title": title, "author": author})
+    convert_pdf_task.delay(job_id, tmp_path, title, author)
 
-        if not os.path.exists(epub_path):
-            raise HTTPException(status_code=500, detail="EPUB file was not created")
+    return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)
 
-        # Read file into memory BEFORE temp directory is deleted
-        with open(epub_path, "rb") as f:
-            epub_bytes = f.read()
 
-    safe_title = title.replace(" ", "_")
-    return Response(
-        content=epub_bytes,
+@app.get("/status/{job_id}")
+async def job_status(job_id: str):
+    """Poll conversion progress. When status=done, call /download/{job_id}."""
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return job
+
+
+@app.get("/download/{job_id}")
+async def download_epub(job_id: str):
+    """Stream the finished EPUB. Only available when status=done."""
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.get("status") != JobStatus.DONE:
+        raise HTTPException(status_code=409, detail=f"Job not ready: {job.get('status')}")
+
+    epub_path = job.get("epub_path")
+    if not epub_path or not os.path.exists(epub_path):
+        raise HTTPException(status_code=410, detail="EPUB expired or missing.")
+
+    safe_title = job.get("title", "book").replace(" ", "_")
+    return FileResponse(
+        epub_path,
         media_type="application/epub+zip",
-        headers={"Content-Disposition": f"attachment; filename={safe_title}.epub"}
+        filename=f"{safe_title}.epub",
     )
