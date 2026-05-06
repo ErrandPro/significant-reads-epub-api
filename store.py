@@ -1,6 +1,5 @@
 import json
 import os
-import ssl
 import redis
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -8,7 +7,7 @@ JOB_TTL_SECONDS = 60 * 60 * 6  # 6 hours
 
 _client = redis.from_url(
     REDIS_URL,
-    ssl_cert_reqs=ssl.CERT_NONE,
+    ssl_cert_reqs=0,  # 0 = ssl.CERT_NONE, avoids string/constant issues
     decode_responses=True,
 )
 
