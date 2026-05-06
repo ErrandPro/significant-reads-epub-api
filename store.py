@@ -1,16 +1,14 @@
 import json
 import os
+import ssl
 import redis
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 JOB_TTL_SECONDS = 60 * 60 * 6  # 6 hours
 
-# Strip ssl_cert_reqs from URL if present — handled via ssl_cert_reqs kwarg instead
-_clean_url = REDIS_URL.split("?")[0]
-
 _client = redis.from_url(
-    _clean_url,
-    ssl_cert_reqs=None,
+    REDIS_URL,
+    ssl_cert_reqs=ssl.CERT_NONE,
     decode_responses=True,
 )
 
