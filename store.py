@@ -1,32 +1,30 @@
 import json
 import os
 import redis
-from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 JOB_TTL_SECONDS = 60 * 60 * 6  # 6 hours
 
 
-def _clean_redis_url(url: str) -> str:
-    """Strip ssl_cert_reqs query param that Upstash embeds in the URL,
-    since redis-py doesn't accept it as a string — we pass it as a kwarg instead."""
+def _clean_url(url: str) -> str:
+    """Remove ssl_cert_reqs query param — redis-py wants it as a kwarg, not in the URL."""
+    from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
     parsed = urlparse(url)
     qs = parse_qs(parsed.query)
     qs.pop("ssl_cert_reqs", None)
-    cleaned = parsed._replace(query=urlencode(qs, doseq=True))
-    return urlunparse(cleaned)
+    return urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
 
 
-_clean_url = _clean_redis_url(REDIS_URL)
+_redis_url = _clean_url(REDIS_URL)
 
-if _clean_url.startswith("rediss://"):
+if _redis_url.startswith("rediss://"):
     _client = redis.from_url(
-        _clean_url,
+        _redis_url,
         decode_responses=True,
         ssl_cert_reqs=None,
     )
 else:
-    _client = redis.from_url(_clean_url, decode_responses=True)
+    _client = redis.from_url(_redis_url, decode_responses=True)
 
 
 class JobStatus:
