@@ -2,14 +2,14 @@ import os
 import uuid
 import base64
 import logging
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from tasks import convert_pdf_task
-from store import get_job, set_job, JobStatus
+from store import get_job, set_job, get_epub, delete_epub, JobStatus
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,7 +36,6 @@ def health():
 
 @app.get("/ready")
 def ready():
-    """Readiness check — verifies Redis/Celery broker is reachable."""
     try:
         from tasks import celery_app
         celery_app.control.inspect(timeout=1).ping()
@@ -54,10 +53,6 @@ async def convert_pdf(
     title: str = Form(...),
     author: str = Form(...),
 ):
-    """
-    Accepts a PDF and enqueues an async conversion job.
-    Returns a job_id immediately — poll /status/{job_id} for progress.
-    """
     if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="File must be a PDF.")
     raw = await pdf.read()
@@ -67,10 +62,7 @@ async def convert_pdf(
     job_id = str(uuid.uuid4())
     logger.info(f"job_id={job_id} filename={pdf.filename} size={len(raw)}")
 
-    # Encode PDF as base64 and pass via Redis — worker lives in a separate container
-    # and cannot access this container's /tmp filesystem.
     pdf_b64 = base64.b64encode(raw).decode("utf-8")
-
     set_job(job_id, {"status": JobStatus.QUEUED, "title": title, "author": author})
     convert_pdf_task.delay(job_id, pdf_b64, title, author)
     return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)
@@ -78,7 +70,6 @@ async def convert_pdf(
 
 @app.get("/status/{job_id}")
 async def job_status(job_id: str):
-    """Poll conversion progress. When status=done, call /download/{job_id}."""
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
@@ -87,18 +78,22 @@ async def job_status(job_id: str):
 
 @app.get("/download/{job_id}")
 async def download_epub(job_id: str):
-    """Stream the finished EPUB. Only available when status=done."""
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
     if job.get("status") != JobStatus.DONE:
         raise HTTPException(status_code=409, detail=f"Job not ready: {job.get('status')}")
-    epub_path = job.get("epub_path")
-    if not epub_path or not os.path.exists(epub_path):
+
+    epub_bytes = get_epub(job_id)
+    if not epub_bytes:
         raise HTTPException(status_code=410, detail="EPUB expired or missing.")
+
     safe_title = job.get("title", "book").replace(" ", "_")
-    return FileResponse(
-        epub_path,
+    # Clean up after serving
+    delete_epub(job_id)
+
+    return Response(
+        content=epub_bytes,
         media_type="application/epub+zip",
-        filename=f"{safe_title}.epub",
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}.epub"'},
     )
