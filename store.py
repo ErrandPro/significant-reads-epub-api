@@ -9,7 +9,7 @@ if REDIS_URL.startswith("rediss://"):
     _client = redis.from_url(
         REDIS_URL,
         decode_responses=True,
-        ssl_cert_reqs="none",
+        ssl_cert_reqs="required",
     )
 else:
     _client = redis.from_url(REDIS_URL, decode_responses=True)
