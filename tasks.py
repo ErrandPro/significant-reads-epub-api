@@ -1,6 +1,8 @@
 import os
+import base64
 import logging
 import time
+from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from celery import Celery
 from store import set_job, get_job, JobStatus
 from processor import extract_text_from_pdf, ocr_pdf_if_needed
@@ -56,10 +58,20 @@ def _update(job_id: str, **kwargs):
     soft_time_limit=300,
     time_limit=360,
 )
-def convert_pdf_task(self, job_id: str, pdf_path: str, title: str, author: str):
+def convert_pdf_task(self, job_id: str, pdf_b64: str, title: str, author: str):
+    """
+    pdf_b64: base64-encoded PDF bytes — passed through Redis since the API
+    and worker run in separate containers with no shared filesystem.
+    """
     t0 = time.time()
     out_dir = f"/tmp/epub_out_{job_id}"
     os.makedirs(out_dir, exist_ok=True)
+
+    # Decode and write PDF to worker's local /tmp
+    pdf_path = f"/tmp/pdf_in_{job_id}.pdf"
+    with open(pdf_path, "wb") as f:
+        f.write(base64.b64decode(pdf_b64))
+
     try:
         _update(job_id, status=JobStatus.EXTRACTING, progress=10)
         logger.info(f"job_id={job_id} stage=extract")
