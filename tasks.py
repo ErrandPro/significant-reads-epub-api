@@ -4,7 +4,7 @@ import logging
 import time
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from celery import Celery
-from store import set_job, get_job, JobStatus
+from store import set_job, get_job, JobStatus, store_epub, EPUB_TTL_SECONDS
 from processor import extract_text_from_pdf, ocr_pdf_if_needed
 from epub_builder import build_epub
 
@@ -14,7 +14,6 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 
 def _ensure_ssl_param(url: str) -> str:
-    """Celery requires ssl_cert_reqs as a query param in the URL itself."""
     if url.startswith("rediss://") and "ssl_cert_reqs" not in url:
         sep = "&" if "?" in url else "?"
         return f"{url}{sep}ssl_cert_reqs=CERT_NONE"
@@ -22,12 +21,7 @@ def _ensure_ssl_param(url: str) -> str:
 
 
 _broker_url = _ensure_ssl_param(REDIS_URL)
-
-_ssl_options = (
-    {"ssl_cert_reqs": None}
-    if REDIS_URL.startswith("rediss://")
-    else {}
-)
+_ssl_options = {"ssl_cert_reqs": None} if REDIS_URL.startswith("rediss://") else {}
 
 celery_app = Celery("converter")
 celery_app.config_from_object({
@@ -59,16 +53,11 @@ def _update(job_id: str, **kwargs):
     time_limit=360,
 )
 def convert_pdf_task(self, job_id: str, pdf_b64: str, title: str, author: str):
-    """
-    pdf_b64: base64-encoded PDF bytes — passed through Redis since the API
-    and worker run in separate containers with no shared filesystem.
-    """
     t0 = time.time()
     out_dir = f"/tmp/epub_out_{job_id}"
     os.makedirs(out_dir, exist_ok=True)
-
-    # Decode and write PDF to worker's local /tmp
     pdf_path = f"/tmp/pdf_in_{job_id}.pdf"
+
     with open(pdf_path, "wb") as f:
         f.write(base64.b64decode(pdf_b64))
 
@@ -76,20 +65,23 @@ def convert_pdf_task(self, job_id: str, pdf_b64: str, title: str, author: str):
         _update(job_id, status=JobStatus.EXTRACTING, progress=10)
         logger.info(f"job_id={job_id} stage=extract")
         text = _extract_text(pdf_path, job_id)
+
         _update(job_id, status=JobStatus.BUILDING, progress=60)
         logger.info(f"job_id={job_id} stage=build words={len(text.split())}")
         epub_path = build_epub(text, title, author, out_dir)
+
         if not os.path.exists(epub_path):
             raise RuntimeError("EPUB file was not created.")
+
+        # Store EPUB bytes in Redis so the API container can serve them
+        with open(epub_path, "rb") as f:
+            epub_bytes = f.read()
+        store_epub(job_id, epub_bytes)
+
         elapsed = round(time.time() - t0, 1)
-        _update(
-            job_id,
-            status=JobStatus.DONE,
-            progress=100,
-            epub_path=epub_path,
-            elapsed_seconds=elapsed,
-        )
+        _update(job_id, status=JobStatus.DONE, progress=100, elapsed_seconds=elapsed)
         logger.info(f"job_id={job_id} status=done elapsed={elapsed}s")
+
     except Exception as exc:
         logger.error(f"job_id={job_id} error={exc}", exc_info=True)
         _update(job_id, status=JobStatus.FAILED, error=str(exc))
@@ -100,6 +92,10 @@ def convert_pdf_task(self, job_id: str, pdf_b64: str, title: str, author: str):
     finally:
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
+        # Clean up local epub dir — bytes are now in Redis
+        import shutil
+        if os.path.exists(out_dir):
+            shutil.rmtree(out_dir, ignore_errors=True)
 
 
 def _extract_text(pdf_path: str, job_id: str) -> str:
