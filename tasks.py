@@ -1,4 +1,5 @@
 import os
+import ssl
 import logging
 import time
 from celery import Celery
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 _ssl_options = (
-    {"ssl_cert_reqs": "required"}
+    {"ssl_cert_reqs": ssl.CERT_REQUIRED}
     if REDIS_URL.startswith("rediss://")
     else {}
 )
@@ -31,12 +32,10 @@ celery_app.config_from_object({
     "broker_connection_retry_on_startup": True,
 })
 
-
 def _update(job_id: str, **kwargs):
     job = get_job(job_id) or {}
     job.update(kwargs)
     set_job(job_id, job)
-
 
 @celery_app.task(
     bind=True,
@@ -78,7 +77,6 @@ def convert_pdf_task(self, job_id: str, pdf_path: str, title: str, author: str):
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
 
-
 def _extract_text(pdf_path: str, job_id: str) -> str:
     try:
         text = _pymupdf_extract(pdf_path)
@@ -96,7 +94,6 @@ def _extract_text(pdf_path: str, job_id: str) -> str:
         logger.warning(f"job_id={job_id} pdfminer_failed={e}")
     logger.info(f"job_id={job_id} extractor=ocr")
     return ocr_pdf_if_needed(pdf_path)
-
 
 def _pymupdf_extract(pdf_path: str) -> str:
     import fitz
