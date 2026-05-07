@@ -1,7 +1,6 @@
 import os
 import logging
 import time
-import ssl
 from celery import Celery
 from store import set_job, get_job, JobStatus
 from processor import extract_text_from_pdf, ocr_pdf_if_needed
@@ -12,7 +11,7 @@ logger = logging.getLogger(__name__)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 _ssl_options = (
-    {"ssl_cert_reqs": ssl.CERT_NONE}
+    {"ssl_cert_reqs": "required"}
     if REDIS_URL.startswith("rediss://")
     else {}
 )
