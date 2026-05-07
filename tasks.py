@@ -1,7 +1,6 @@
 import os
 import logging
 import time
-from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from celery import Celery
 from store import set_job, get_job, JobStatus
 from processor import extract_text_from_pdf, ocr_pdf_if_needed
@@ -12,27 +11,26 @@ logger = logging.getLogger(__name__)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 
-def _clean_redis_url(url: str) -> str:
-    """Strip ssl_cert_reqs query param Upstash embeds in the URL."""
-    parsed = urlparse(url)
-    qs = parse_qs(parsed.query)
-    qs.pop("ssl_cert_reqs", None)
-    cleaned = parsed._replace(query=urlencode(qs, doseq=True))
-    return urlunparse(cleaned)
+def _ensure_ssl_param(url: str) -> str:
+    """Celery requires ssl_cert_reqs as a query param in the URL itself."""
+    if url.startswith("rediss://") and "ssl_cert_reqs" not in url:
+        sep = "&" if "?" in url else "?"
+        return f"{url}{sep}ssl_cert_reqs=CERT_NONE"
+    return url
 
 
-_clean_url = _clean_redis_url(REDIS_URL)
+_broker_url = _ensure_ssl_param(REDIS_URL)
 
 _ssl_options = (
     {"ssl_cert_reqs": None}
-    if _clean_url.startswith("rediss://")
+    if REDIS_URL.startswith("rediss://")
     else {}
 )
 
 celery_app = Celery("converter")
 celery_app.config_from_object({
-    "broker_url": _clean_url,
-    "result_backend": _clean_url,
+    "broker_url": _broker_url,
+    "result_backend": _broker_url,
     "broker_use_ssl": _ssl_options,
     "redis_backend_use_ssl": _ssl_options,
     "task_serializer": "json",
