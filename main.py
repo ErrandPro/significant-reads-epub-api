@@ -1,5 +1,6 @@
 import os
 import uuid
+import base64
 import logging
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -7,8 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-import tempfile
-
 from tasks import convert_pdf_task
 from store import get_job, set_job, JobStatus
 
@@ -17,19 +16,16 @@ logging.basicConfig(
     format='{"time":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}',
 )
 logger = logging.getLogger(__name__)
-
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="PDF→EPUB API", version="3.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
@@ -64,7 +60,6 @@ async def convert_pdf(
     """
     if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="File must be a PDF.")
-
     raw = await pdf.read()
     if len(raw) > MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail="PDF exceeds 50 MB limit.")
@@ -72,14 +67,12 @@ async def convert_pdf(
     job_id = str(uuid.uuid4())
     logger.info(f"job_id={job_id} filename={pdf.filename} size={len(raw)}")
 
-    # Write PDF to a stable temp path Celery worker can read
-    tmp_path = f"/tmp/pdf_in_{job_id}.pdf"
-    with open(tmp_path, "wb") as f:
-        f.write(raw)
+    # Encode PDF as base64 and pass via Redis — worker lives in a separate container
+    # and cannot access this container's /tmp filesystem.
+    pdf_b64 = base64.b64encode(raw).decode("utf-8")
 
     set_job(job_id, {"status": JobStatus.QUEUED, "title": title, "author": author})
-    convert_pdf_task.delay(job_id, tmp_path, title, author)
-
+    convert_pdf_task.delay(job_id, pdf_b64, title, author)
     return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)
 
 
@@ -100,11 +93,9 @@ async def download_epub(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found.")
     if job.get("status") != JobStatus.DONE:
         raise HTTPException(status_code=409, detail=f"Job not ready: {job.get('status')}")
-
     epub_path = job.get("epub_path")
     if not epub_path or not os.path.exists(epub_path):
         raise HTTPException(status_code=410, detail="EPUB expired or missing.")
-
     safe_title = job.get("title", "book").replace(" ", "_")
     return FileResponse(
         epub_path,
