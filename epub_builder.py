@@ -91,12 +91,11 @@ _CHAPTER_CSS = """
     /* ── Drop cap (Phase 4) ─────────────────────────────────────────────
        A drop cap is a large decorative first letter at the start of a
        chapter or section.  The PDF encodes it as an oversized standalone
-       glyph; we re-emit it as an inline <span class="dropcap"> merged
-       into the opening paragraph so it flows with the sentence.
+       glyph; we re-emit it as a dropcap span merged into the opening
+       paragraph so it flows with the sentence.
        Float is used here because it is the one place in the EPUB CSS
-       where it is genuinely safe: a single character inline within a <p>
-       that degrades gracefully (the letter is still present) on renderers
-       that ignore float.                                                  */
+       where it is genuinely safe: a single character inline within a
+       paragraph that degrades gracefully on renderers that ignore float.  */
     .dropcap {
         float: left;
         font-size: 3em;
@@ -115,7 +114,7 @@ def _chapter_xhtml(chapter_title: str, body_html: str) -> str:
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <title>{safe_title}</title>
-  <style>{_CHAPTER_CSS}</style>
+  <style>/* <![CDATA[ */{_CHAPTER_CSS}/* ]]> */</style>
 </head>
 <body>
   <h1>{safe_title}</h1>
