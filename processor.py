@@ -56,6 +56,185 @@ def extract_cover_image(pdf_path: str) -> bytes | None:
         return None
 
 
+# ── Phase 1: Column detection & reading-order reconstruction ─────────────────
+#
+# Strategy: vertical projection profile.
+#
+# For every text block on a page we know its left (x0) and right (x1) edge.
+# We slice the page width into thin vertical strips and count how many blocks
+# "occupy" each strip (i.e. their bbox spans across it).  A strip that is
+# consistently UNoccupied across many blocks is a column gutter.
+#
+# Once gutters are found we assign each block a column index (0, 1, 2 …) and
+# re-sort by (column_index, top_y).  Full-width blocks (wider than 80 % of
+# page width) are treated as spanning headers/footers and interleaved by y.
+
+def detect_columns(
+    blocks: list[dict],
+    page_width: float,
+    min_gutter_width: float = 10.0,
+    strip_count: int = 200,
+) -> list[tuple[float, float]]:
+    """
+    Analyse block bboxes and return a list of (col_x0, col_x1) column bands
+    sorted left-to-right.
+
+    Parameters
+    ----------
+    blocks            Raw PyMuPDF block dicts (type 0 or 1) for one page.
+    page_width        Page width in points (page.rect.width).
+    min_gutter_width  Minimum gap width (pts) to count as a real column gutter.
+    strip_count       Resolution of the projection profile (200 is plenty for
+                      A4/letter at sub-millimetre precision).
+
+    Returns
+    -------
+    List of (x0, x1) tuples, one per detected column, left-to-right.
+    Falls back to [(0, page_width)] (single column) when no gutter is found.
+    """
+    if not blocks or page_width <= 0:
+        return [(0.0, page_width)]
+
+    strip_width = page_width / strip_count
+    # occupancy[i] = number of blocks whose bbox spans strip i
+    occupancy = [0] * strip_count
+
+    for blk in blocks:
+        bx0, _, bx1, _ = blk.get("bbox", (0, 0, 0, 0))
+        bx0 = max(0.0, bx0)
+        bx1 = min(page_width, bx1)
+        if bx1 <= bx0:
+            continue
+        si = int(bx0 / strip_width)
+        ei = min(int(bx1 / strip_width), strip_count - 1)
+        for s in range(si, ei + 1):
+            occupancy[s] += 1
+
+    if not any(occupancy):
+        return [(0.0, page_width)]
+
+    # Collect contiguous zero-occupancy runs as gutter candidates
+    gutters: list[tuple[float, float]] = []
+    in_gutter = False
+    g_start = 0
+    for i, occ in enumerate(occupancy):
+        if occ == 0 and not in_gutter:
+            in_gutter = True
+            g_start = i
+        elif occ > 0 and in_gutter:
+            in_gutter = False
+            g_x0 = g_start * strip_width
+            g_x1 = i * strip_width
+            if g_x1 - g_x0 >= min_gutter_width:
+                gutters.append((g_x0, g_x1))
+    if in_gutter:
+        g_x0 = g_start * strip_width
+        g_x1 = strip_count * strip_width
+        if g_x1 - g_x0 >= min_gutter_width:
+            gutters.append((g_x0, g_x1))
+
+    if not gutters:
+        return [(0.0, page_width)]
+
+    # Build column bands from the space between gutters
+    col_boundaries: list[float] = [0.0]
+    for gx0, gx1 in gutters:
+        col_boundaries.append(gx0)   # right edge of column to the left
+        col_boundaries.append(gx1)   # left edge of column to the right
+    col_boundaries.append(page_width)
+
+    # col_boundaries alternates: col_x0, col_x1, col_x0, col_x1 …
+    columns: list[tuple[float, float]] = []
+    for i in range(0, len(col_boundaries) - 1, 2):
+        cx0 = col_boundaries[i]
+        cx1 = col_boundaries[i + 1]
+        if cx1 - cx0 > min_gutter_width:
+            columns.append((cx0, cx1))
+
+    return columns if columns else [(0.0, page_width)]
+
+
+def _block_column_index(
+    blk_bbox: tuple,
+    columns: list[tuple[float, float]],
+    page_width: float,
+) -> int:
+    """
+    Return the 0-based column index that best contains this block's horizontal
+    centre.  Blocks spanning >80 % of page width return -1 (full-width).
+    """
+    bx0, _, bx1, _ = blk_bbox
+    if (bx1 - bx0) >= page_width * 0.80:
+        return -1
+
+    centre_x = (bx0 + bx1) / 2.0
+    best_col, best_dist = 0, float("inf")
+    for i, (cx0, cx1) in enumerate(columns):
+        dist = abs(centre_x - (cx0 + cx1) / 2.0)
+        if dist < best_dist:
+            best_dist = dist
+            best_col = i
+    return best_col
+
+
+def sort_blocks_into_columns(
+    blocks: list[dict],
+    columns: list[tuple[float, float]],
+    page_width: float,
+) -> list[dict]:
+    """
+    Re-order blocks into correct reading order for a multi-column layout:
+
+    • Full-width blocks (col_index == -1) are interleaved by their top-y so
+      they appear at the right point in the vertical flow (e.g. a chapter
+      title that spans both columns stays above the columnar body text).
+    • Within each column blocks are ordered top-to-bottom.
+    • Columns are read left-to-right.
+
+    Single-column pages are returned unchanged (fast path).
+    """
+    if len(columns) <= 1:
+        return blocks
+
+    full_width: list[tuple[float, dict]] = []
+    col_blocks: list[tuple[int, float, dict]] = []
+
+    for blk in blocks:
+        bbox = blk.get("bbox", (0, 0, 0, 0))
+        top_y = bbox[1]
+        col_idx = _block_column_index(bbox, columns, page_width)
+        if col_idx == -1:
+            full_width.append((top_y, blk))
+        else:
+            col_blocks.append((col_idx, top_y, blk))
+
+    col_blocks.sort(key=lambda t: (t[0], t[1]))
+    sorted_col = [blk for _, _, blk in col_blocks]
+
+    if not full_width:
+        return sorted_col
+
+    # Merge full-width blocks back at their natural y positions
+    full_width.sort(key=lambda t: t[0])
+    fw_iter = iter(full_width)
+    next_fw: tuple | None = next(fw_iter, None)
+
+    result: list[dict] = []
+    for blk in sorted_col:
+        blk_top_y = blk["bbox"][1]
+        while next_fw is not None and next_fw[0] <= blk_top_y:
+            result.append(next_fw[1])
+            next_fw = next(fw_iter, None)
+        result.append(blk)
+
+    if next_fw is not None:
+        result.append(next_fw[1])
+    for _, fw_blk in fw_iter:
+        result.append(fw_blk)
+
+    return result
+
+
 # ── Rich extraction (images + tables + formatting) ────────────────────────────
 
 def _bbox_overlap(a: tuple, b: tuple, threshold: float = 0.25) -> bool:
@@ -74,11 +253,8 @@ def _bbox_overlap(a: tuple, b: tuple, threshold: float = 0.25) -> bool:
 def _is_toc_page(page, body_size: float) -> bool:
     """
     Heuristic: a page is a Table of Contents page if it contains several
-    lines that end with a page-number (digits) separated by dot leaders or
-    wide whitespace.  We check the raw text of the page.
-
-    FIX for Bug 2 — prevents TOC entries from firing chapter-heading
-    detection and creating spurious empty chapters.
+    lines that end with a page-number separated by dot leaders or wide
+    whitespace.
     """
     toc_pattern = re.compile(r"\.{3,}|\s{3,}\d+\s*$")
     raw_lines = page.get_text().splitlines()
@@ -96,18 +272,18 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
       {"kind": "image", "data": bytes, "ext": str, "width": int, "height": int}
       {"kind": "table", "rows": [[str, ...]]}
 
-    Uses font-size analysis for heading detection (falls back to regex patterns).
-    Returns None when PyMuPDF is unavailable or chapter quality is poor.
+    Phase 1 additions (column layout)
+    ───────────────────────────────────
+    Before the main per-block loop, each page's blocks are passed through:
+      detect_columns()           — finds column gutters via projection profile
+      sort_blocks_into_columns() — re-orders blocks into correct reading order
 
-    Bugs fixed:
-      1. _flush_lines() is now called before every new text block so each PDF
-         text-block becomes its own <p> rather than being jammed together.
-      2. Pages detected as TOC are skipped entirely for heading/content
-         extraction, preventing fake chapters from dot-leader entries.
-      3. Consecutive large-font lines are accumulated into a single heading
-         string before _save_chapter() is called, so multi-line titles like
-         "Diligently" / "and How" are joined rather than split into tiny
-         empty chapters.
+    Single-column pages hit the fast path and are unaffected.
+
+    Previously fixed bugs (unchanged):
+      1. _flush_lines() before every text block → one <p> per block.
+      2. TOC pages skipped → no spurious chapters.
+      3. Multi-line headings accumulated → joined into one title.
     """
     try:
         import fitz
@@ -133,15 +309,13 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
 
         sizes.sort()
         body_size: float = sizes[len(sizes) // 2]
-        chapter_min_size: float = body_size * 1.6   # very large → chapter title
-        section_min_size: float = body_size * 1.2   # moderately large → section heading
+        chapter_min_size: float = body_size * 1.6
+        section_min_size: float = body_size * 1.2
 
         # ── Pass 2: walk every page ──────────────────────────────────────
         chapters: list[tuple[str, list[dict]]] = []
         state: dict = {"title": "Front Matter", "blocks": [], "lines": []}
         seen_xrefs: set[int] = set()
-
-        # FIX Bug 3 — buffer for accumulating multi-line chapter headings
         pending_heading_parts: list[str] = []
 
         def _flush_lines() -> None:
@@ -150,11 +324,6 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                 state["lines"] = []
 
         def _flush_pending_heading() -> None:
-            """
-            Commit any accumulated heading-line fragments as a single chapter.
-            Called when we see the first non-large-font line after a run of
-            large-font lines, or at end-of-document.
-            """
             nonlocal pending_heading_parts
             if not pending_heading_parts:
                 return
@@ -171,10 +340,11 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
             state["lines"]  = []
 
         for page in doc:
-            # FIX Bug 2 — skip TOC pages entirely
             if _is_toc_page(page, body_size):
                 logger.debug(f"Skipping TOC page {page.number}")
                 continue
+
+            page_width: float = page.rect.width
 
             # ── Tables ───────────────────────────────────────────────────
             tab_regions: list[tuple[tuple, list[list[str]]]] = []
@@ -185,19 +355,32 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                         [str(c).strip() if c else "" for c in row]
                         for row in raw if any(c for c in row)
                     ]
-                    if len(rows) >= 2:           # need at least header + 1 data row
+                    if len(rows) >= 2:
                         tab_regions.append((tuple(tab.bbox), rows))
             except Exception as e:
                 logger.debug(f"Table extraction skipped on a page: {e}")
 
             added_tab_indices: set[int] = set()
 
+            # ── Phase 1: column-aware block ordering ─────────────────────
+            raw_blocks: list[dict] = page.get_text("dict", sort=True)["blocks"]
+            columns: list[tuple[float, float]] = detect_columns(raw_blocks, page_width)
+            ordered_blocks: list[dict] = sort_blocks_into_columns(
+                raw_blocks, columns, page_width
+            )
+
+            if len(columns) > 1:
+                logger.debug(
+                    f"Page {page.number}: {len(columns)}-column layout detected "
+                    f"({[f'{c[0]:.0f}–{c[1]:.0f}' for c in columns]})"
+                )
+
             # ── Text and image blocks ────────────────────────────────────
-            for blk in page.get_text("dict", sort=True)["blocks"]:
+            for blk in ordered_blocks:
                 btype = blk.get("type")
                 bbox  = tuple(blk.get("bbox", (0, 0, 0, 0)))
 
-                # Table overlap — emit table block once, skip overlapping text
+                # Table overlap
                 tab_hit = next(
                     (
                         (i, trows)
@@ -208,7 +391,6 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                 )
                 if tab_hit is not None:
                     i, trows = tab_hit
-                    # Flush any pending heading/lines before emitting table
                     _flush_pending_heading()
                     _flush_lines()
                     state["blocks"].append({"kind": "table", "rows": trows})
@@ -222,7 +404,7 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                         try:
                             img = doc.extract_image(xref)
                             w, h = img.get("width", 0), img.get("height", 0)
-                            if w >= 80 and h >= 80:          # skip tiny decoratives
+                            if w >= 80 and h >= 80:
                                 _flush_pending_heading()
                                 _flush_lines()
                                 state["blocks"].append({
@@ -241,8 +423,7 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                 if btype != 0:
                     continue
 
-                # FIX Bug 1 — flush accumulated lines before starting a new
-                # PDF text block so each block maps to its own <p> element.
+                # Bug 1 fix: flush previous block's lines → its own <p>
                 _flush_lines()
 
                 for ln in blk.get("lines", []):
@@ -254,20 +435,16 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                     max_size = max((s["size"] for s in spans), default=body_size)
                     is_very_large = max_size >= chapter_min_size
 
-                    # FIX Bug 3 — accumulate consecutive large-font lines
-                    # instead of immediately firing _save_chapter for each one.
+                    # Bug 3 fix: accumulate consecutive large-font lines
                     if len(line_text) < 120 and (
                         is_very_large or is_chapter_heading(line_text)
                     ):
                         pending_heading_parts.append(line_text)
                         continue
 
-                    # First normal line after a run of large-font lines →
-                    # commit the accumulated heading now.
                     if pending_heading_parts:
                         _flush_pending_heading()
 
-                    # Build span list with formatting flags
                     span_items = [
                         {
                             "text":   s["text"],
@@ -284,7 +461,7 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                             "is_section": max_size >= section_min_size,
                         })
 
-        # End of document — flush whatever is still buffered
+        # End of document
         _flush_pending_heading()
         _flush_lines()
         if state["blocks"]:
