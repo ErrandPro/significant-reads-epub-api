@@ -1,4 +1,3 @@
-```python
 import os
 import re
 import zipfile
@@ -133,7 +132,6 @@ def _render_spans(spans: list[dict]) -> str:
     return "".join(parts)
 
 
-
 def _render_text_lines(lines: list[dict], html: list[str]) -> None:
     para_parts: list[str] = []
     pending_dropcap_html: str | None = None
@@ -184,7 +182,6 @@ def _render_text_lines(lines: list[dict], html: list[str]) -> None:
             html.append(f"<p>{p_content}</p>")
 
 
-
 def _render_sidebar_block(blk: dict) -> str:
     inner: list[str] = []
     _render_text_lines(blk.get("lines", []), inner)
@@ -193,7 +190,6 @@ def _render_sidebar_block(blk: dict) -> str:
         return ""
 
     return f'<div class="sidebar">\n{"".join(inner)}\n</div>'
-
 
 
 def _render_rich_blocks(
@@ -316,7 +312,6 @@ def smart_join_paragraphs(text: str) -> list[str]:
         paras.append(" ".join(current_words))
 
     return paras if paras else [text.strip()]
-
 
 
 def _render_text_chapter(chap_content: str) -> str:
@@ -524,7 +519,6 @@ img {
     return output
 
 
-
 def _img_media_type(filename: str) -> str:
     ext = filename.rsplit(".", 1)[-1].lower()
 
@@ -536,8 +530,3 @@ def _img_media_type(filename: str) -> str:
         "webp": "webp",
         "svg": "svg+xml",
     }.get(ext, "png")
-```
-
-The main issue in your original file was the broken indentation before `cover_xhtml = ...` which causes a Python `IndentationError`.
-
-This version is cleaned, fully aligned, and safe to replace your entire `epub_builder.py` file with.
