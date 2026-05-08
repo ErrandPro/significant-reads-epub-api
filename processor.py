@@ -31,8 +31,7 @@ def ocr_pdf_if_needed(pdf_path: str) -> str:
     images = convert_from_path(pdf_path, dpi=200)
     pages = []
     for img in images:
-        # Light pre-processing improves OCR accuracy on low-quality scans
-        img = img.convert("L")        # Greyscale
+        img = img.convert("L")
         img = ImageOps.autocontrast(img)
         img = img.filter(ImageFilter.SHARPEN)
         pages.append(pytesseract.image_to_string(img, lang="eng"))
@@ -54,6 +53,208 @@ def extract_cover_image(pdf_path: str) -> bytes | None:
         return png_bytes
     except Exception as e:
         logger.info(f"Cover extraction skipped: {e}")
+        return None
+
+
+# ── Rich extraction (images + tables + formatting) ────────────────────────────
+
+def _bbox_overlap(a: tuple, b: tuple, threshold: float = 0.25) -> bool:
+    """Return True if bbox a overlaps bbox b by more than threshold of a's area."""
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return False
+    intersection = (ix1 - ix0) * (iy1 - iy0)
+    area_a = max((ax1 - ax0) * (ay1 - ay0), 1e-6)
+    return (intersection / area_a) > threshold
+
+
+def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
+    """
+    Extract chapters as rich content using PyMuPDF.
+
+    Each chapter is a (title, blocks) tuple where each block is one of:
+      {"kind": "text",  "lines": [{"spans": [{"text", "bold", "italic", "size"}],
+                                    "is_section": bool}]}
+      {"kind": "image", "data": bytes, "ext": str, "width": int, "height": int}
+      {"kind": "table", "rows": [[str, ...]]}
+
+    Uses font-size analysis for heading detection (falls back to regex patterns).
+    Returns None when PyMuPDF is unavailable or chapter quality is poor.
+    """
+    try:
+        import fitz
+    except ImportError:
+        logger.warning("PyMuPDF not available — skipping rich extraction")
+        return None
+
+    try:
+        doc = fitz.open(pdf_path)
+
+        # ── Pass 1: determine median body font size ──────────────────────
+        sizes: list[float] = []
+        for page in doc:
+            for blk in page.get_text("dict")["blocks"]:
+                if blk.get("type") == 0:
+                    for ln in blk["lines"]:
+                        for sp in ln["spans"]:
+                            if sp["text"].strip():
+                                sizes.append(sp["size"])
+        if not sizes:
+            doc.close()
+            return None
+
+        sizes.sort()
+        body_size: float = sizes[len(sizes) // 2]
+        chapter_min_size: float = body_size * 1.6   # very large → chapter title
+        section_min_size: float = body_size * 1.2   # moderately large → section heading
+
+        # ── Pass 2: walk every page ──────────────────────────────────────
+        chapters: list[tuple[str, list[dict]]] = []
+        state: dict = {"title": "Front Matter", "blocks": [], "lines": []}
+        seen_xrefs: set[int] = set()
+
+        def _flush_lines() -> None:
+            if state["lines"]:
+                state["blocks"].append({"kind": "text", "lines": state["lines"][:]})
+                state["lines"] = []
+
+        def _save_chapter() -> None:
+            _flush_lines()
+            if state["blocks"]:
+                chapters.append((state["title"], state["blocks"][:]))
+            state["blocks"] = []
+            state["lines"] = []
+
+        for page in doc:
+            # ── Tables ───────────────────────────────────────────────────
+            tab_regions: list[tuple[tuple, list[list[str]]]] = []
+            try:
+                for tab in page.find_tables().tables:
+                    raw = tab.extract()
+                    rows = [
+                        [str(c).strip() if c else "" for c in row]
+                        for row in raw if any(c for c in row)
+                    ]
+                    if len(rows) >= 2:           # need at least header + 1 data row
+                        tab_regions.append((tuple(tab.bbox), rows))
+            except Exception as e:
+                logger.debug(f"Table extraction skipped on a page: {e}")
+
+            added_tab_indices: set[int] = set()
+
+            # ── Text and image blocks ────────────────────────────────────
+            for blk in page.get_text("dict", sort=True)["blocks"]:
+                btype = blk.get("type")
+                bbox  = tuple(blk.get("bbox", (0, 0, 0, 0)))
+
+                # Table overlap — emit table block once, skip overlapping text
+                tab_hit = next(
+                    (
+                        (i, trows)
+                        for i, (tbbox, trows) in enumerate(tab_regions)
+                        if i not in added_tab_indices and _bbox_overlap(bbox, tbbox)
+                    ),
+                    None,
+                )
+                if tab_hit is not None:
+                    i, trows = tab_hit
+                    _flush_lines()
+                    state["blocks"].append({"kind": "table", "rows": trows})
+                    added_tab_indices.add(i)
+                    continue
+
+                # Image block
+                if btype == 1:
+                    xref = blk.get("xref", 0)
+                    if xref and xref not in seen_xrefs:
+                        try:
+                            img = doc.extract_image(xref)
+                            w, h = img.get("width", 0), img.get("height", 0)
+                            if w >= 80 and h >= 80:          # skip tiny decoratives
+                                _flush_lines()
+                                state["blocks"].append({
+                                    "kind":   "image",
+                                    "data":   img["image"],
+                                    "ext":    img.get("ext", "png"),
+                                    "width":  w,
+                                    "height": h,
+                                })
+                                seen_xrefs.add(xref)
+                        except Exception as e:
+                            logger.debug(f"Image extraction error: {e}")
+                    continue
+
+                # Text block
+                if btype != 0:
+                    continue
+
+                for ln in blk.get("lines", []):
+                    spans = ln.get("spans", [])
+                    line_text = " ".join(s["text"] for s in spans).strip()
+                    if not line_text:
+                        continue
+
+                    max_size = max((s["size"] for s in spans), default=body_size)
+                    is_very_large = max_size >= chapter_min_size
+
+                    # Chapter heading detection (font size OR regex pattern)
+                    if len(line_text) < 120 and (
+                        is_very_large or is_chapter_heading(line_text)
+                    ):
+                        _save_chapter()
+                        state["title"] = line_text
+                        continue
+
+                    # Build span list with formatting flags
+                    span_items = [
+                        {
+                            "text":   s["text"],
+                            "bold":   bool(s.get("flags", 0) & 16),
+                            "italic": bool(s.get("flags", 0) & 2),
+                            "size":   s["size"],
+                        }
+                        for s in spans
+                        if s["text"].strip()
+                    ]
+                    if span_items:
+                        state["lines"].append({
+                            "spans":      span_items,
+                            "is_section": max_size >= section_min_size,
+                        })
+
+        _save_chapter()
+        doc.close()
+
+        if not chapters:
+            return None
+
+        # ── Quality gate ─────────────────────────────────────────────────
+        word_counts = [
+            sum(
+                len(s["text"].split())
+                for blk in blocks if blk["kind"] == "text"
+                for ln in blk["lines"]
+                for s in ln["spans"]
+            )
+            for _, blocks in chapters
+        ]
+        max_words = max(word_counts, default=0)
+        tiny_chapters = sum(1 for w in word_counts if w < 25)
+        if tiny_chapters > len(chapters) * 0.55 and max_words > 500:
+            logger.info("Rich extraction: too many tiny chapters — falling back to text pipeline")
+            return None
+
+        logger.info(
+            f"Rich extraction: {len(chapters)} chapters, "
+            f"{sum(word_counts)} words total"
+        )
+        return chapters
+
+    except Exception as e:
+        logger.warning(f"extract_rich_chapters failed: {e}")
         return None
 
 
