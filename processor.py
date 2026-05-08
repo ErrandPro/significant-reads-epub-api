@@ -361,6 +361,94 @@ def classify_sidebar(
     return False
 
 
+# ── Phase 3: Image float detection ───────────────────────────────────────────
+#
+# Strategy: single pass over the ordered block list for a page.
+#
+# For every image block we look at text blocks that are:
+#   • on the same page (guaranteed — we work per-page)
+#   • horizontally overlapping: the image's x-range intersects the text
+#     block's x-range by at least HORIZ_OVERLAP_THRESHOLD of the image width
+#   • vertically adjacent: the vertical distance between the two bboxes is
+#     less than VERT_PROXIMITY_PTS (default 80 pt ≈ ~28 mm — generous enough
+#     to catch text that wraps around an image that is slightly taller)
+#
+# When a match is found the text block dict gains a "nearby_image" key set
+# to True.  The epub_builder reads this flag on the block that *precedes* an
+# image block and switches from <div class="img-wrap"> to
+# <figure class="float-image">.
+#
+# We annotate the text block rather than the image block so that the builder
+# loop — which iterates blocks in order — can make the decision at the image
+# block's turn by looking one step back.
+
+def find_text_image_pairs(
+    blocks: list[dict],
+    horiz_overlap_threshold: float = 0.25,
+    vert_proximity_pts: float = 80.0,
+) -> None:
+    """
+    Annotate text blocks that are horizontally and vertically adjacent to an
+    image block on the same page.  Operates **in-place** on the block list.
+
+    The annotation added to qualifying text blocks is::
+
+        block["nearby_image"] = True
+
+    Parameters
+    ----------
+    blocks                  Ordered list of rich block dicts for ONE page,
+                            as produced by the extraction loop.  Blocks may
+                            be of kind "text", "sidebar", "image", or "table".
+    horiz_overlap_threshold Fraction of the image's width that must overlap
+                            the text block's x-range to count as adjacent.
+    vert_proximity_pts      Maximum vertical gap (in PDF points) between the
+                            image bbox and the text bbox for them to be
+                            considered a float pair.
+    """
+    # Collect (index, bbox) for image blocks only
+    image_entries: list[tuple[int, tuple]] = [
+        (i, blk["bbox"])
+        for i, blk in enumerate(blocks)
+        if blk.get("kind") == "image" and "bbox" in blk
+    ]
+
+    if not image_entries:
+        return
+
+    for txt_idx, blk in enumerate(blocks):
+        if blk.get("kind") not in ("text", "sidebar"):
+            continue
+        tbbox = blk.get("bbox")
+        if not tbbox:
+            continue
+        tx0, ty0, tx1, ty1 = tbbox
+
+        for img_idx, ibbox in image_entries:
+            if img_idx == txt_idx:
+                continue
+            ix0, iy0, ix1, iy1 = ibbox
+
+            # Horizontal overlap fraction (relative to image width)
+            img_width = max(ix1 - ix0, 1e-6)
+            horiz_overlap = max(0.0, min(tx1, ix1) - max(tx0, ix0))
+            if horiz_overlap / img_width < horiz_overlap_threshold:
+                continue
+
+            # Vertical proximity: gap between the two bboxes
+            vert_gap = max(ty0 - iy1, iy0 - ty1, 0.0)
+            if vert_gap > vert_proximity_pts:
+                continue
+
+            blk["nearby_image"] = True
+            logger.debug(
+                f"Phase 3: text block {txt_idx} paired with image block {img_idx} "
+                f"(horiz_overlap={horiz_overlap:.1f}/{img_width:.1f}, "
+                f"vert_gap={vert_gap:.1f})"
+            )
+            break  # one image match is enough per text block
+
+
 # ── Rich extraction (images + tables + formatting) ────────────────────────────
 
 def _bbox_overlap(a: tuple, b: tuple, threshold: float = 0.25) -> bool:
@@ -395,24 +483,33 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
     Each chapter is a (title, blocks) tuple where each block is one of:
       {"kind": "text",    "lines": [{"spans": [...], "is_section": bool}]}
       {"kind": "sidebar", "lines": [{"spans": [...], "is_section": bool}]}
-      {"kind": "image",   "data": bytes, "ext": str, "width": int, "height": int}
+      {"kind": "image",   "data": bytes, "ext": str, "width": int, "height": int,
+                          "bbox": tuple}
       {"kind": "table",   "rows": [[str, ...]]}
 
-    Phase 2 additions (sidebar detection)
-    ───────────────────────────────────────
-    For every text block, classify_sidebar() is called with the page's column
-    bands and drawing list before lines are accumulated.  Blocks that score
-    positive are tagged "kind": "sidebar" instead of "kind": "text".  The line
-    and span structure inside is identical so the renderer can reuse the same
-    span-rendering logic with different wrapper HTML.
+    Phase 3 additions (image float detection)
+    ──────────────────────────────────────────
+    After all blocks for a page have been appended to state["blocks"], a call
+    to find_text_image_pairs() annotates text blocks that are horizontally and
+    vertically adjacent to image blocks with nearby_image=True.  The epub
+    builder uses this flag to switch from <div class="img-wrap"> to
+    <figure class="float-image"> for the image that follows.
+
+    Phase 4 additions (drop cap detection)
+    ────────────────────────────────────────
+    Inside the large-font line accumulator, before a line is added to
+    pending_heading_parts, we test whether it is a single character or a very
+    short fragment (≤2 chars after stripping punctuation/spaces).  If so it is
+    held in pending_dropcap instead of pending_heading_parts.  The *next* body
+    line then picks up the dropcap and stores it in the line dict as
+    "dropcap_char".  The epub builder prepends
+    <span class="dropcap">X</span> to the first <p> of that block.
+
+    Phase 2 additions (sidebar detection) — unchanged:
+      classify_sidebar() called before lines are accumulated per block.
 
     Phase 1 additions (column layout) — unchanged:
       detect_columns() + sort_blocks_into_columns() run on every page.
-
-    Previously fixed bugs — unchanged:
-      1. _flush_lines() before every text block → one <p> per block.
-      2. TOC pages skipped → no spurious chapters.
-      3. Multi-line headings accumulated → joined into one title.
     """
     try:
         import fitz
@@ -447,9 +544,18 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
         seen_xrefs: set[int] = set()
         pending_heading_parts: list[str] = []
 
+        # Phase 4: drop cap state
+        # When a large-font single-char fragment is detected it lands here.
+        # The very next body line will consume it and store it as dropcap_char.
+        pending_dropcap: str | None = None
+
         # Carries the kind for the block currently being accumulated.
         # Switches between "text" and "sidebar" at the start of each block.
         current_block_kind: str = "text"
+
+        # Phase 3: track blocks added during the current page so we can run
+        # find_text_image_pairs() over just that page's worth of blocks.
+        page_block_start_idx: int = 0
 
         def _flush_lines() -> None:
             if state["lines"]:
@@ -487,6 +593,9 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                 page_drawings: list[dict] = page.get_drawings()
             except Exception:
                 page_drawings = []
+
+            # Phase 3: record where this page's blocks start in state["blocks"]
+            page_block_start_idx = len(state["blocks"])
 
             # ── Tables ───────────────────────────────────────────────────
             tab_regions: list[tuple[tuple, list[list[str]]]] = []
@@ -539,7 +648,7 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                     added_tab_indices.add(i)
                     continue
 
-                # Image block
+                # Image block — store bbox for Phase 3 pairing
                 if btype == 1:
                     xref = blk.get("xref", 0)
                     if xref and xref not in seen_xrefs:
@@ -555,6 +664,8 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                                     "ext":    img.get("ext", "png"),
                                     "width":  w,
                                     "height": h,
+                                    # Phase 3: preserve bbox so pairing can use it
+                                    "bbox":   bbox,
                                 })
                                 seen_xrefs.add(xref)
                         except Exception as e:
@@ -574,6 +685,9 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                     nonlocal_kind[0] = "sidebar"
                 current_block_kind = nonlocal_kind[0]
 
+                # Store bbox on text/sidebar blocks too, needed by Phase 3
+                blk["_rich_bbox"] = bbox
+
                 for ln in blk.get("lines", []):
                     spans = ln.get("spans", [])
                     line_text = " ".join(s["text"] for s in spans).strip()
@@ -583,12 +697,37 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                     max_size = max((s["size"] for s in spans), default=body_size)
                     is_very_large = max_size >= chapter_min_size
 
+                    # ── Phase 4: drop cap detection ──────────────────────
+                    # A drop cap is a very-large-font fragment that is either
+                    # a single character or at most two characters (allowing
+                    # for ligatures like "Th" rendered as a unit).  It must
+                    # immediately precede the rest of its sentence rather than
+                    # standing alone as a heading.  We detect it here and hold
+                    # it in pending_dropcap; it is consumed by the very next
+                    # body line below.
+                    if is_very_large and len(line_text) <= 2:
+                        # Almost certainly a drop cap, not a chapter title.
+                        # Discard any half-accumulated heading first.
+                        if pending_heading_parts:
+                            _flush_pending_heading()
+                        pending_dropcap = line_text.strip()
+                        logger.debug(f"Phase 4: drop cap candidate '{pending_dropcap}'")
+                        continue
+
                     # Bug 3 fix: accumulate consecutive large-font lines.
                     # Sidebar blocks are unlikely to be chapter headings, but
                     # we honour the check anyway for robustness.
                     if len(line_text) < 120 and (
                         is_very_large or is_chapter_heading(line_text)
                     ):
+                        # Before appending, consume any stray drop cap that was
+                        # waiting — it clearly wasn't followed by body text so
+                        # treat it as a standalone decorative element (discard).
+                        if pending_dropcap is not None:
+                            logger.debug(
+                                f"Phase 4: discarding orphaned drop cap '{pending_dropcap}'"
+                            )
+                            pending_dropcap = None
                         pending_heading_parts.append(line_text)
                         continue
 
@@ -606,10 +745,42 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                         if s["text"].strip()
                     ]
                     if span_items:
-                        state["lines"].append({
+                        line_dict: dict = {
                             "spans":      span_items,
                             "is_section": max_size >= section_min_size,
-                        })
+                        }
+                        # ── Phase 4: attach drop cap to first body line ──
+                        if pending_dropcap is not None:
+                            line_dict["dropcap_char"] = pending_dropcap
+                            pending_dropcap = None
+                            logger.debug(
+                                f"Phase 4: drop cap '{line_dict['dropcap_char']}' "
+                                f"merged into line '{line_text[:40]}…'"
+                            )
+                        state["lines"].append(line_dict)
+
+            # ── Phase 3: pair images with adjacent text on this page ─────
+            # We operate only on the slice of state["blocks"] that belongs to
+            # this page.  Blocks added by earlier pages are not re-examined.
+            # We need bboxes on the rich block dicts; image blocks carry
+            # "bbox" directly; text/sidebar blocks carry "_rich_bbox" (set
+            # above).  Normalise to a single "bbox" key on a temporary view.
+            page_blocks_slice = state["blocks"][page_block_start_idx:]
+            # Build a lightweight proxy list with unified bbox keys
+            proxy_blocks: list[dict] = []
+            for pb in page_blocks_slice:
+                if "bbox" in pb:
+                    proxy_blocks.append(pb)
+                elif "_rich_bbox" in pb:
+                    # Temporarily expose _rich_bbox as bbox for the pairing fn
+                    pb["bbox"] = pb["_rich_bbox"]
+                    proxy_blocks.append(pb)
+            find_text_image_pairs(proxy_blocks)
+            # Clean up temporary bbox aliases on text/sidebar blocks
+            for pb in page_blocks_slice:
+                if "_rich_bbox" in pb:
+                    pb.pop("bbox", None)
+                    pb.pop("_rich_bbox", None)
 
         # End of document
         _flush_pending_heading()
