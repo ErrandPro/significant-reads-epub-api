@@ -2,10 +2,9 @@ import os
 import base64
 import logging
 import time
-from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from celery import Celery
 from store import set_job, get_job, JobStatus, store_epub, EPUB_TTL_SECONDS
-from processor import extract_text_from_pdf, ocr_pdf_if_needed
+from processor import extract_text_from_pdf, ocr_pdf_if_needed, extract_rich_chapters
 from epub_builder import build_epub
 
 logger = logging.getLogger(__name__)
@@ -62,18 +61,37 @@ def convert_pdf_task(self, job_id: str, pdf_b64: str, title: str, author: str):
         f.write(base64.b64decode(pdf_b64))
 
     try:
+        # ── Stage 1: extraction ──────────────────────────────────────────
         _update(job_id, status=JobStatus.EXTRACTING, progress=10)
         logger.info(f"job_id={job_id} stage=extract")
+
+        # Try rich extraction first (images + tables + formatting).
+        # Falls back to plain-text pipeline automatically if quality is poor.
+        rich_chapters = _try_rich_extraction(pdf_path, job_id)
+
+        # Always extract plain text too — used as fallback and for word-count logging.
         text = _extract_text(pdf_path, job_id)
 
+        # ── Stage 2: build EPUB ──────────────────────────────────────────
         _update(job_id, status=JobStatus.BUILDING, progress=60)
-        logger.info(f"job_id={job_id} stage=build words={len(text.split())}")
-        epub_path = build_epub(text, title, author, out_dir)
+        logger.info(
+            f"job_id={job_id} stage=build "
+            f"words={len(text.split())} "
+            f"rich={'yes' if rich_chapters else 'no'}"
+        )
+
+        epub_path = build_epub(
+            text,
+            title,
+            author,
+            out_dir,
+            pdf_path=pdf_path,
+            rich_chapters=rich_chapters,
+        )
 
         if not os.path.exists(epub_path):
             raise RuntimeError("EPUB file was not created.")
 
-        # Store EPUB bytes in Redis so the API container can serve them
         with open(epub_path, "rb") as f:
             epub_bytes = f.read()
         store_epub(job_id, epub_bytes)
@@ -92,10 +110,32 @@ def convert_pdf_task(self, job_id: str, pdf_b64: str, title: str, author: str):
     finally:
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
-        # Clean up local epub dir — bytes are now in Redis
         import shutil
         if os.path.exists(out_dir):
             shutil.rmtree(out_dir, ignore_errors=True)
+
+
+# ── Extraction helpers ────────────────────────────────────────────────────────
+
+def _try_rich_extraction(
+    pdf_path: str, job_id: str
+) -> list[tuple[str, list[dict]]] | None:
+    """
+    Attempt rich chapter extraction (images, tables, formatting).
+    Returns None on any failure so the caller can fall back gracefully.
+    """
+    try:
+        chapters = extract_rich_chapters(pdf_path)
+        if chapters:
+            logger.info(
+                f"job_id={job_id} rich_extractor=ok chapters={len(chapters)}"
+            )
+        else:
+            logger.info(f"job_id={job_id} rich_extractor=fallback")
+        return chapters
+    except Exception as e:
+        logger.warning(f"job_id={job_id} rich_extractor_failed={e}")
+        return None
 
 
 def _extract_text(pdf_path: str, job_id: str) -> str:
