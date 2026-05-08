@@ -71,6 +71,21 @@ def _bbox_overlap(a: tuple, b: tuple, threshold: float = 0.25) -> bool:
     return (intersection / area_a) > threshold
 
 
+def _is_toc_page(page, body_size: float) -> bool:
+    """
+    Heuristic: a page is a Table of Contents page if it contains several
+    lines that end with a page-number (digits) separated by dot leaders or
+    wide whitespace.  We check the raw text of the page.
+
+    FIX for Bug 2 — prevents TOC entries from firing chapter-heading
+    detection and creating spurious empty chapters.
+    """
+    toc_pattern = re.compile(r"\.{3,}|\s{3,}\d+\s*$")
+    raw_lines = page.get_text().splitlines()
+    hits = sum(1 for ln in raw_lines if toc_pattern.search(ln.strip()))
+    return hits >= 4
+
+
 def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
     """
     Extract chapters as rich content using PyMuPDF.
@@ -83,6 +98,16 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
 
     Uses font-size analysis for heading detection (falls back to regex patterns).
     Returns None when PyMuPDF is unavailable or chapter quality is poor.
+
+    Bugs fixed:
+      1. _flush_lines() is now called before every new text block so each PDF
+         text-block becomes its own <p> rather than being jammed together.
+      2. Pages detected as TOC are skipped entirely for heading/content
+         extraction, preventing fake chapters from dot-leader entries.
+      3. Consecutive large-font lines are accumulated into a single heading
+         string before _save_chapter() is called, so multi-line titles like
+         "Diligently" / "and How" are joined rather than split into tiny
+         empty chapters.
     """
     try:
         import fitz
@@ -116,19 +141,41 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
         state: dict = {"title": "Front Matter", "blocks": [], "lines": []}
         seen_xrefs: set[int] = set()
 
+        # FIX Bug 3 — buffer for accumulating multi-line chapter headings
+        pending_heading_parts: list[str] = []
+
         def _flush_lines() -> None:
             if state["lines"]:
                 state["blocks"].append({"kind": "text", "lines": state["lines"][:]})
                 state["lines"] = []
 
-        def _save_chapter() -> None:
+        def _flush_pending_heading() -> None:
+            """
+            Commit any accumulated heading-line fragments as a single chapter.
+            Called when we see the first non-large-font line after a run of
+            large-font lines, or at end-of-document.
+            """
+            nonlocal pending_heading_parts
+            if not pending_heading_parts:
+                return
+            heading_text = " ".join(pending_heading_parts)
+            pending_heading_parts = []
+            _save_chapter(heading_text)
+
+        def _save_chapter(new_title: str) -> None:
             _flush_lines()
             if state["blocks"]:
                 chapters.append((state["title"], state["blocks"][:]))
+            state["title"]  = new_title
             state["blocks"] = []
-            state["lines"] = []
+            state["lines"]  = []
 
         for page in doc:
+            # FIX Bug 2 — skip TOC pages entirely
+            if _is_toc_page(page, body_size):
+                logger.debug(f"Skipping TOC page {page.number}")
+                continue
+
             # ── Tables ───────────────────────────────────────────────────
             tab_regions: list[tuple[tuple, list[list[str]]]] = []
             try:
@@ -161,6 +208,8 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                 )
                 if tab_hit is not None:
                     i, trows = tab_hit
+                    # Flush any pending heading/lines before emitting table
+                    _flush_pending_heading()
                     _flush_lines()
                     state["blocks"].append({"kind": "table", "rows": trows})
                     added_tab_indices.add(i)
@@ -174,6 +223,7 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                             img = doc.extract_image(xref)
                             w, h = img.get("width", 0), img.get("height", 0)
                             if w >= 80 and h >= 80:          # skip tiny decoratives
+                                _flush_pending_heading()
                                 _flush_lines()
                                 state["blocks"].append({
                                     "kind":   "image",
@@ -191,6 +241,10 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                 if btype != 0:
                     continue
 
+                # FIX Bug 1 — flush accumulated lines before starting a new
+                # PDF text block so each block maps to its own <p> element.
+                _flush_lines()
+
                 for ln in blk.get("lines", []):
                     spans = ln.get("spans", [])
                     line_text = " ".join(s["text"] for s in spans).strip()
@@ -200,13 +254,18 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                     max_size = max((s["size"] for s in spans), default=body_size)
                     is_very_large = max_size >= chapter_min_size
 
-                    # Chapter heading detection (font size OR regex pattern)
+                    # FIX Bug 3 — accumulate consecutive large-font lines
+                    # instead of immediately firing _save_chapter for each one.
                     if len(line_text) < 120 and (
                         is_very_large or is_chapter_heading(line_text)
                     ):
-                        _save_chapter()
-                        state["title"] = line_text
+                        pending_heading_parts.append(line_text)
                         continue
+
+                    # First normal line after a run of large-font lines →
+                    # commit the accumulated heading now.
+                    if pending_heading_parts:
+                        _flush_pending_heading()
 
                     # Build span list with formatting flags
                     span_items = [
@@ -225,7 +284,12 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                             "is_section": max_size >= section_min_size,
                         })
 
-        _save_chapter()
+        # End of document — flush whatever is still buffered
+        _flush_pending_heading()
+        _flush_lines()
+        if state["blocks"]:
+            chapters.append((state["title"], state["blocks"][:]))
+
         doc.close()
 
         if not chapters:
