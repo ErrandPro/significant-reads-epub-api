@@ -500,14 +500,31 @@ def build_epub(
 </body>
 </html>"""
 
-    cover_xhtml = """<?xml version="1.0" encoding="utf-8"?>
+  cover_xhtml = """<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
-<head><title>Cover</title>
-<style>body{{margin:0;padding:0;text-align:center;}}
-img{{max-width:100%;max-height:100%;display:block;margin:0 auto;}}</style>
+<head>
+<title>Cover</title>
+<style>
+body {
+    margin: 0;
+    padding: 0;
+    text-align: center;
+    background: #ffffff;
+}
+
+img {
+    display: block;
+    margin: 0 auto;
+    max-width: 100%;
+    max-height: 100vh;
+    height: auto;
+}
+</style>
 </head>
-<body><img src="cover.png" alt="Cover"/></body>
+<body>
+    <img src="cover.png" alt="Cover"/>
+</body>
 </html>"""
 
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
