@@ -96,7 +96,6 @@ def detect_columns(
         return [(0.0, page_width)]
 
     strip_width = page_width / strip_count
-    # occupancy[i] = number of blocks whose bbox spans strip i
     occupancy = [0] * strip_count
 
     for blk in blocks:
@@ -113,7 +112,6 @@ def detect_columns(
     if not any(occupancy):
         return [(0.0, page_width)]
 
-    # Collect contiguous zero-occupancy runs as gutter candidates
     gutters: list[tuple[float, float]] = []
     in_gutter = False
     g_start = 0
@@ -136,14 +134,12 @@ def detect_columns(
     if not gutters:
         return [(0.0, page_width)]
 
-    # Build column bands from the space between gutters
     col_boundaries: list[float] = [0.0]
     for gx0, gx1 in gutters:
-        col_boundaries.append(gx0)   # right edge of column to the left
-        col_boundaries.append(gx1)   # left edge of column to the right
+        col_boundaries.append(gx0)
+        col_boundaries.append(gx1)
     col_boundaries.append(page_width)
 
-    # col_boundaries alternates: col_x0, col_x1, col_x0, col_x1 …
     columns: list[tuple[float, float]] = []
     for i in range(0, len(col_boundaries) - 1, 2):
         cx0 = col_boundaries[i]
@@ -183,13 +179,7 @@ def sort_blocks_into_columns(
     page_width: float,
 ) -> list[dict]:
     """
-    Re-order blocks into correct reading order for a multi-column layout:
-
-    • Full-width blocks (col_index == -1) are interleaved by their top-y so
-      they appear at the right point in the vertical flow (e.g. a chapter
-      title that spans both columns stays above the columnar body text).
-    • Within each column blocks are ordered top-to-bottom.
-    • Columns are read left-to-right.
+    Re-order blocks into correct reading order for a multi-column layout.
 
     Single-column pages are returned unchanged (fast path).
     """
@@ -214,7 +204,6 @@ def sort_blocks_into_columns(
     if not full_width:
         return sorted_col
 
-    # Merge full-width blocks back at their natural y positions
     full_width.sort(key=lambda t: t[0])
     fw_iter = iter(full_width)
     next_fw: tuple | None = next(fw_iter, None)
@@ -233,6 +222,143 @@ def sort_blocks_into_columns(
         result.append(fw_blk)
 
     return result
+
+
+# ── Phase 2: Sidebar detection ───────────────────────────────────────────────
+#
+# A sidebar is a text block that sits *beside* the main reading flow rather
+# than within it.  Three independent signals are combined; a block needs at
+# least two of the three to be classified as a sidebar, reducing false
+# positives on narrow pull-quotes or short body paragraphs.
+#
+# Signal 1 — WIDTH
+#   The block is narrower than 45 % of the page width.  A full body column
+#   (even in a two-column layout) typically fills at least 45 % of the page.
+#
+# Signal 2 — HORIZONTAL OFFSET FROM COLUMN CENTRES
+#   Every detected body column has a centre x.  If the block's own centre x
+#   is further than 15 % of page_width away from *every* column centre it is
+#   laterally displaced — i.e. it occupies an interstitial position that body
+#   text never uses.
+#
+# Signal 3 — BACKGROUND SHADING OR BORDER (PyMuPDF drawings check)
+#   PDFs often mark sidebars with a filled rectangle or a ruled border behind
+#   or around the text block.  We check whether any filled/stroked drawing
+#   rect on the page substantially overlaps the block's bbox.  This signal is
+#   optional (the drawings list may be empty on some PDFs) but when present it
+#   is very reliable.
+#
+# The function is designed to be called *before* the lines of a block are
+# processed so that the caller can route the block to the sidebar path.
+
+def _block_has_background(
+    blk_bbox: tuple,
+    page_drawings: list[dict],
+    overlap_threshold: float = 0.55,
+) -> bool:
+    """
+    Return True if a filled or stroked drawing rect on the page overlaps
+    the block's bbox by at least `overlap_threshold` of the block's area.
+
+    `page_drawings` is the list returned by page.get_drawings() in PyMuPDF.
+    Only rects with a fill colour or a stroke colour distinct from white/none
+    are considered.
+    """
+    bx0, by0, bx1, by1 = blk_bbox
+    blk_area = max((bx1 - bx0) * (by1 - by0), 1e-6)
+
+    for d in page_drawings:
+        # Only filled or visibly stroked rects
+        fill   = d.get("fill")
+        color  = d.get("color")
+        has_fill   = fill  is not None and fill  != (1, 1, 1)   # not white
+        has_stroke = color is not None and color != (1, 1, 1)
+        if not (has_fill or has_stroke):
+            continue
+
+        rect = d.get("rect")
+        if rect is None:
+            continue
+
+        # rect can be a fitz.Rect or a plain tuple
+        try:
+            rx0, ry0, rx1, ry1 = float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])
+        except (TypeError, IndexError):
+            continue
+
+        ix0 = max(bx0, rx0)
+        iy0 = max(by0, ry0)
+        ix1 = min(bx1, rx1)
+        iy1 = min(by1, ry1)
+        if ix1 <= ix0 or iy1 <= iy0:
+            continue
+
+        overlap = (ix1 - ix0) * (iy1 - iy0)
+        if overlap / blk_area >= overlap_threshold:
+            return True
+
+    return False
+
+
+def classify_sidebar(
+    blk: dict,
+    columns: list[tuple[float, float]],
+    page_width: float,
+    page_drawings: list[dict] | None = None,
+    width_threshold: float = 0.45,
+    offset_threshold: float = 0.15,
+) -> bool:
+    """
+    Return True if *blk* is a sidebar block that should be rendered outside
+    the main paragraph flow.
+
+    Parameters
+    ----------
+    blk               A PyMuPDF block dict (type 0, text).
+    columns           Column bands from detect_columns() for this page.
+    page_width        Page width in points.
+    page_drawings     page.get_drawings() list; pass None to skip Signal 3.
+    width_threshold   Block must be narrower than this fraction of page_width.
+    offset_threshold  Block centre must be further than this fraction of
+                      page_width from every column centre to fire Signal 2.
+
+    Returns
+    -------
+    True when at least 2 of the 3 signals are positive.
+    Always False for full-width blocks (they are chapter/section headings).
+    """
+    bbox = blk.get("bbox", (0, 0, 0, 0))
+    bx0, _, bx1, _ = bbox
+    blk_width = bx1 - bx0
+
+    # Full-width blocks are never sidebars
+    if blk_width >= page_width * 0.80:
+        return False
+
+    # ── Signal 1: width ──────────────────────────────────────────────────
+    sig_width = blk_width < page_width * width_threshold
+
+    # ── Signal 2: lateral offset from all column centres ────────────────
+    centre_x = (bx0 + bx1) / 2.0
+    min_col_dist = min(
+        abs(centre_x - (cx0 + cx1) / 2.0)
+        for cx0, cx1 in columns
+    )
+    sig_offset = min_col_dist > page_width * offset_threshold
+
+    # ── Signal 3: background shading / border ────────────────────────────
+    sig_background = False
+    if page_drawings:
+        sig_background = _block_has_background(bbox, page_drawings)
+
+    score = sum([sig_width, sig_offset, sig_background])
+    if score >= 2:
+        logger.debug(
+            f"Sidebar detected at bbox={bbox} "
+            f"(width={sig_width}, offset={sig_offset}, bg={sig_background})"
+        )
+        return True
+    return False
 
 
 # ── Rich extraction (images + tables + formatting) ────────────────────────────
@@ -267,20 +393,23 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
     Extract chapters as rich content using PyMuPDF.
 
     Each chapter is a (title, blocks) tuple where each block is one of:
-      {"kind": "text",  "lines": [{"spans": [{"text", "bold", "italic", "size"}],
-                                    "is_section": bool}]}
-      {"kind": "image", "data": bytes, "ext": str, "width": int, "height": int}
-      {"kind": "table", "rows": [[str, ...]]}
+      {"kind": "text",    "lines": [{"spans": [...], "is_section": bool}]}
+      {"kind": "sidebar", "lines": [{"spans": [...], "is_section": bool}]}
+      {"kind": "image",   "data": bytes, "ext": str, "width": int, "height": int}
+      {"kind": "table",   "rows": [[str, ...]]}
 
-    Phase 1 additions (column layout)
-    ───────────────────────────────────
-    Before the main per-block loop, each page's blocks are passed through:
-      detect_columns()           — finds column gutters via projection profile
-      sort_blocks_into_columns() — re-orders blocks into correct reading order
+    Phase 2 additions (sidebar detection)
+    ───────────────────────────────────────
+    For every text block, classify_sidebar() is called with the page's column
+    bands and drawing list before lines are accumulated.  Blocks that score
+    positive are tagged "kind": "sidebar" instead of "kind": "text".  The line
+    and span structure inside is identical so the renderer can reuse the same
+    span-rendering logic with different wrapper HTML.
 
-    Single-column pages hit the fast path and are unaffected.
+    Phase 1 additions (column layout) — unchanged:
+      detect_columns() + sort_blocks_into_columns() run on every page.
 
-    Previously fixed bugs (unchanged):
+    Previously fixed bugs — unchanged:
       1. _flush_lines() before every text block → one <p> per block.
       2. TOC pages skipped → no spurious chapters.
       3. Multi-line headings accumulated → joined into one title.
@@ -318,9 +447,16 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
         seen_xrefs: set[int] = set()
         pending_heading_parts: list[str] = []
 
+        # Carries the kind for the block currently being accumulated.
+        # Switches between "text" and "sidebar" at the start of each block.
+        current_block_kind: str = "text"
+
         def _flush_lines() -> None:
             if state["lines"]:
-                state["blocks"].append({"kind": "text", "lines": state["lines"][:]})
+                state["blocks"].append({
+                    "kind":  current_block_kind,
+                    "lines": state["lines"][:],
+                })
                 state["lines"] = []
 
         def _flush_pending_heading() -> None:
@@ -345,6 +481,12 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                 continue
 
             page_width: float = page.rect.width
+
+            # Phase 2: collect drawings once per page for Signal 3
+            try:
+                page_drawings: list[dict] = page.get_drawings()
+            except Exception:
+                page_drawings = []
 
             # ── Tables ───────────────────────────────────────────────────
             tab_regions: list[tuple[tuple, list[list[str]]]] = []
@@ -423,8 +565,14 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                 if btype != 0:
                     continue
 
-                # Bug 1 fix: flush previous block's lines → its own <p>
+                # Bug 1 fix: flush previous block → its own <p>
                 _flush_lines()
+
+                # ── Phase 2: classify sidebar before processing lines ────
+                nonlocal_kind = ["text"]   # mutable cell so _flush_lines can read it
+                if classify_sidebar(blk, columns, page_width, page_drawings):
+                    nonlocal_kind[0] = "sidebar"
+                current_block_kind = nonlocal_kind[0]
 
                 for ln in blk.get("lines", []):
                     spans = ln.get("spans", [])
@@ -435,7 +583,9 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                     max_size = max((s["size"] for s in spans), default=body_size)
                     is_very_large = max_size >= chapter_min_size
 
-                    # Bug 3 fix: accumulate consecutive large-font lines
+                    # Bug 3 fix: accumulate consecutive large-font lines.
+                    # Sidebar blocks are unlikely to be chapter headings, but
+                    # we honour the check anyway for robustness.
                     if len(line_text) < 120 and (
                         is_very_large or is_chapter_heading(line_text)
                     ):
@@ -476,7 +626,7 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
         word_counts = [
             sum(
                 len(s["text"].split())
-                for blk in blocks if blk["kind"] == "text"
+                for blk in blocks if blk["kind"] in ("text", "sidebar")
                 for ln in blk["lines"]
                 for s in ln["spans"]
             )
