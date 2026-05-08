@@ -58,6 +58,53 @@ _CHAPTER_CSS = """
         margin: 0pt 0pt 4pt;
         color: #2a5f85;
     }
+
+    /* ── Image float (Phase 3) ──────────────────────────────────────────
+       Used when an image was detected as horizontally adjacent to body
+       text in the source PDF (float-style layout).  We can't replicate
+       true CSS float reliably across EPUB renderers, so we emit a centred
+       figure that is visually distinct from a plain img-wrap but still
+       renders safely on all readers.  The descriptive caption slot is
+       reserved via the figcaption rule even if we don't populate it yet. */
+    figure.float-image {
+        display: block;
+        margin: 1em auto;
+        text-align: center;
+        border: 1pt solid #d8d8d8;
+        padding: 0.4em;
+        background-color: #fafafa;
+        max-width: 90%;
+    }
+    figure.float-image img {
+        max-width: 100%;
+        height: auto;
+        display: block;
+        margin: 0 auto;
+    }
+    figure.float-image figcaption {
+        font-size: 0.85em;
+        color: #555;
+        margin-top: 0.3em;
+        font-style: italic;
+    }
+
+    /* ── Drop cap (Phase 4) ─────────────────────────────────────────────
+       A drop cap is a large decorative first letter at the start of a
+       chapter or section.  The PDF encodes it as an oversized standalone
+       glyph; we re-emit it as an inline <span class="dropcap"> merged
+       into the opening paragraph so it flows with the sentence.
+       Float is used here because it is the one place in the EPUB CSS
+       where it is genuinely safe: a single character inline within a <p>
+       that degrades gracefully (the letter is still present) on renderers
+       that ignore float.                                                  */
+    .dropcap {
+        float: left;
+        font-size: 3em;
+        line-height: 0.85;
+        margin: 0.05em 0.06em 0 0;
+        font-weight: bold;
+        color: #1a1a1a;
+    }
 """
 
 
@@ -105,10 +152,17 @@ def _render_text_lines(lines: list[dict], html: list[str]) -> None:
     Lines marked is_section become <h2>; all other lines are joined into
     a single <p> per contiguous non-heading run.
 
+    Phase 4: the first body line in a block may carry a "dropcap_char" key.
+    When present, a <span class="dropcap"> is prepended to that line's <p>
+    and the paragraph's text-indent is suppressed inline so the drop cap
+    sits flush with the left margin.
+
     This helper is shared between the "text" and "sidebar" block renderers
     so the line/span logic lives in exactly one place.
     """
     para_parts: list[str] = []
+    # Phase 4: carry the dropcap from the first line into the first <p>
+    pending_dropcap_html: str | None = None
 
     for ln in lines:
         spans      = ln.get("spans", [])
@@ -117,16 +171,38 @@ def _render_text_lines(lines: list[dict], html: list[str]) -> None:
         if not rendered:
             continue
 
+        # Phase 4: pick up dropcap_char from the line dict
+        dropcap_char = ln.get("dropcap_char")
+        if dropcap_char and pending_dropcap_html is None:
+            safe_dc = _sanitize(dropcap_char)
+            pending_dropcap_html = f'<span class="dropcap">{safe_dc}</span>'
+
         if is_section:
             if para_parts:
-                html.append(f'<p>{"".join(para_parts).strip()}</p>')
+                p_content = "".join(para_parts).strip()
+                if pending_dropcap_html:
+                    # Flush dropcap with this paragraph; suppress indent
+                    html.append(
+                        f'<p style="text-indent:0">'
+                        f'{pending_dropcap_html}{p_content}</p>'
+                    )
+                    pending_dropcap_html = None
+                else:
+                    html.append(f'<p>{p_content}</p>')
                 para_parts = []
             html.append(f"<h2>{rendered}</h2>")
         else:
             para_parts.append(rendered + " ")
 
     if para_parts:
-        html.append(f'<p>{"".join(para_parts).strip()}</p>')
+        p_content = "".join(para_parts).strip()
+        if pending_dropcap_html:
+            html.append(
+                f'<p style="text-indent:0">'
+                f'{pending_dropcap_html}{p_content}</p>'
+            )
+        else:
+            html.append(f'<p>{p_content}</p>')
 
 
 def _render_sidebar_block(blk: dict) -> str:
@@ -151,13 +227,25 @@ def _render_rich_blocks(
     Image bytes are collected into `images` (keyed by filename).
 
     Handles four block kinds:
-      "text"    → <p> / <h2> paragraphs
+      "text"    → <p> / <h2> paragraphs  (Phase 4: first <p> may have dropcap)
       "sidebar" → <div class="sidebar"> with inner <p> / <h2>
-      "image"   → <div class="img-wrap"><img .../></div>
+      "image"   → <div class="img-wrap"><img .../></div>  OR
+                  <figure class="float-image"><img .../></figure>
+                  (Phase 3: figure used when preceding text block had nearby_image)
       "table"   → <table> with <th> header row and <td> data rows
+
+    Phase 3 logic:
+      We track whether the most-recently-rendered text/sidebar block had the
+      nearby_image flag.  When the next block is an image and that flag is set,
+      the image is wrapped in <figure class="float-image"> instead of the plain
+      <div class="img-wrap">.  The flag is consumed once used so it doesn't
+      bleed onto subsequent images.
     """
     html: list[str] = []
     img_idx = 0
+    # Phase 3: set to True after a text block with nearby_image=True;
+    # consumed (reset to False) at the next image block.
+    last_text_had_nearby_image: bool = False
 
     for blk in blocks:
         kind = blk.get("kind")
@@ -168,11 +256,22 @@ def _render_rich_blocks(
             ext   = blk.get("ext", "png")
             fname = f"{img_prefix}_{img_idx:03d}.{ext}"
             images[fname] = blk["data"]
-            html.append(
-                f'<div class="img-wrap">'
-                f'<img src="images/{fname}" alt=""/>'
-                f'</div>'
-            )
+
+            # Phase 3: choose wrapper based on whether preceding text
+            # block was annotated as adjacent to this image.
+            if last_text_had_nearby_image:
+                html.append(
+                    f'<figure class="float-image">'
+                    f'<img src="images/{fname}" alt=""/>'
+                    f'</figure>'
+                )
+                last_text_had_nearby_image = False
+            else:
+                html.append(
+                    f'<div class="img-wrap">'
+                    f'<img src="images/{fname}" alt=""/>'
+                    f'</div>'
+                )
 
         # ── Table ────────────────────────────────────────────────────────
         elif kind == "table":
@@ -187,12 +286,15 @@ def _render_rich_blocks(
                 )
                 row_html.append(f"<tr>{cells}</tr>")
             html.append(f'<table>{"".join(row_html)}</table>')
+            last_text_had_nearby_image = False
 
         # ── Sidebar (Phase 2) ────────────────────────────────────────────
         elif kind == "sidebar":
             rendered = _render_sidebar_block(blk)
             if rendered:
                 html.append(rendered)
+            # Phase 3: sidebars can also carry the nearby_image flag
+            last_text_had_nearby_image = blk.get("nearby_image", False)
 
         # ── Text (normal body paragraph) ─────────────────────────────────
         elif kind == "text":
@@ -202,6 +304,8 @@ def _render_rich_blocks(
             block_html: list[str] = []
             _render_text_lines(lines, block_html)
             html.extend(block_html)
+            # Phase 3: propagate nearby_image flag to the next image block
+            last_text_had_nearby_image = blk.get("nearby_image", False)
 
     return "\n".join(html)
 
