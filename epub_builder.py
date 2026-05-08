@@ -32,6 +32,32 @@ _CHAPTER_CSS = """
     td     { padding: 4pt 8pt; border: 1pt solid #ddd; vertical-align: top; }
     .img-wrap { text-align: center; margin: 1em 0; }
     .img-wrap img { max-width: 95%; height: auto; }
+
+    /* ── Sidebar (Phase 2) ──────────────────────────────────────────────
+       Renders as a self-contained box that sits outside the main paragraph
+       flow.  EPUB renderers vary in float support so we avoid float and
+       instead use a full-width block with distinct visual treatment.
+       The box is deliberately kept simple for maximum renderer compat:
+       left border accent + light background + slightly smaller font.     */
+    .sidebar {
+        display: block;
+        margin: 1.2em 0.5em 1.2em 1.5em;
+        padding: 0.6em 0.9em;
+        border-left: 3pt solid #4a7fa5;
+        background-color: #f0f6fb;
+        font-size: 0.93em;
+        line-height: 145%;
+    }
+    .sidebar p {
+        margin: 0pt 0pt 5pt;
+        text-indent: 0;          /* sidebars rarely use indent */
+        text-align: left;
+    }
+    .sidebar h2 {
+        font-size: 1.05em;
+        margin: 0pt 0pt 4pt;
+        color: #2a5f85;
+    }
 """
 
 
@@ -51,7 +77,7 @@ def _chapter_xhtml(chapter_title: str, body_html: str) -> str:
 </html>"""
 
 
-# ── Rich rendering (images + tables + formatted text) ────────────────────────
+# ── Rich rendering (images + tables + formatted text + sidebars) ──────────────
 
 def _render_spans(spans: list[dict]) -> str:
     """Convert a list of span dicts to inline HTML with bold/italic tags."""
@@ -59,7 +85,7 @@ def _render_spans(spans: list[dict]) -> str:
     for s in spans:
         text = _sanitize(s.get("text", ""))
         if not text.strip():
-            parts.append(text)   # preserve whitespace spans
+            parts.append(text)
             continue
         b, i = s.get("bold", False), s.get("italic", False)
         if b and i:
@@ -72,14 +98,63 @@ def _render_spans(spans: list[dict]) -> str:
     return "".join(parts)
 
 
+def _render_text_lines(lines: list[dict], html: list[str]) -> None:
+    """
+    Render a list of line-dicts (from a text or sidebar block) into `html`.
+
+    Lines marked is_section become <h2>; all other lines are joined into
+    a single <p> per contiguous non-heading run.
+
+    This helper is shared between the "text" and "sidebar" block renderers
+    so the line/span logic lives in exactly one place.
+    """
+    para_parts: list[str] = []
+
+    for ln in lines:
+        spans      = ln.get("spans", [])
+        is_section = ln.get("is_section", False)
+        rendered   = _render_spans(spans).strip()
+        if not rendered:
+            continue
+
+        if is_section:
+            if para_parts:
+                html.append(f'<p>{"".join(para_parts).strip()}</p>')
+                para_parts = []
+            html.append(f"<h2>{rendered}</h2>")
+        else:
+            para_parts.append(rendered + " ")
+
+    if para_parts:
+        html.append(f'<p>{"".join(para_parts).strip()}</p>')
+
+
+def _render_sidebar_block(blk: dict) -> str:
+    """
+    Render a sidebar block as a <div class="sidebar"> containing the same
+    paragraph/heading structure as a normal text block.
+    """
+    inner: list[str] = []
+    _render_text_lines(blk.get("lines", []), inner)
+    if not inner:
+        return ""
+    return f'<div class="sidebar">\n{"".join(inner)}\n</div>'
+
+
 def _render_rich_blocks(
     blocks: list[dict],
-    images: dict[str, bytes],   # populated in-place: filename → bytes
+    images: dict[str, bytes],
     img_prefix: str,
 ) -> str:
     """
     Render a list of rich blocks to an XHTML body string.
     Image bytes are collected into `images` (keyed by filename).
+
+    Handles four block kinds:
+      "text"    → <p> / <h2> paragraphs
+      "sidebar" → <div class="sidebar"> with inner <p> / <h2>
+      "image"   → <div class="img-wrap"><img .../></div>
+      "table"   → <table> with <th> header row and <td> data rows
     """
     html: list[str] = []
     img_idx = 0
@@ -106,42 +181,27 @@ def _render_rich_blocks(
                 continue
             row_html: list[str] = []
             for ri, row in enumerate(rows):
-                tag  = "th" if ri == 0 else "td"
+                tag   = "th" if ri == 0 else "td"
                 cells = "".join(
                     f"<{tag}>{_sanitize(cell)}</{tag}>" for cell in row
                 )
                 row_html.append(f"<tr>{cells}</tr>")
             html.append(f'<table>{"".join(row_html)}</table>')
 
-        # ── Text ─────────────────────────────────────────────────────────
+        # ── Sidebar (Phase 2) ────────────────────────────────────────────
+        elif kind == "sidebar":
+            rendered = _render_sidebar_block(blk)
+            if rendered:
+                html.append(rendered)
+
+        # ── Text (normal body paragraph) ─────────────────────────────────
         elif kind == "text":
             lines = blk.get("lines", [])
             if not lines:
                 continue
-
-            # Each PDF block is one logical paragraph (or a section heading).
-            # Lines within the block are joined; section-heading lines get <h2>.
-            para_parts: list[str] = []
-            pending_section: str | None = None
-
-            for ln in lines:
-                spans     = ln.get("spans", [])
-                is_section = ln.get("is_section", False)
-                rendered   = _render_spans(spans).strip()
-                if not rendered:
-                    continue
-
-                if is_section:
-                    # Flush any accumulated paragraph text first
-                    if para_parts:
-                        html.append(f'<p>{"".join(para_parts).strip()}</p>')
-                        para_parts = []
-                    html.append(f"<h2>{rendered}</h2>")
-                else:
-                    para_parts.append(rendered + " ")
-
-            if para_parts:
-                html.append(f'<p>{"".join(para_parts).strip()}</p>')
+            block_html: list[str] = []
+            _render_text_lines(lines, block_html)
+            html.extend(block_html)
 
     return "\n".join(html)
 
@@ -218,7 +278,7 @@ def build_epub(
 ) -> str:
     """
     Build an EPUB from either:
-      • rich_chapters (images + tables + formatting) — preferred path, or
+      • rich_chapters (images + tables + formatting + sidebars) — preferred, or
       • text           (plain text fallback)
 
     The pdf_path is used solely to extract a cover image.
@@ -227,7 +287,6 @@ def build_epub(
     safe_title = re.sub(r"\s+", "_", safe_title)
     output = os.path.join(out_dir, f"{safe_title}.epub")
 
-    # ── Decide rendering path ─────────────────────────────────────────────
     use_rich = rich_chapters is not None and len(rich_chapters) > 0
 
     if use_rich:
@@ -235,16 +294,12 @@ def build_epub(
     else:
         raw_chapters = extract_chapters_from_text(text) or [("Content", text or "No content extracted.")]
 
-    # ── Cover image ───────────────────────────────────────────────────────
     cover_png: bytes | None = None
     if pdf_path:
         cover_png = extract_cover_image(pdf_path)
 
-    # ── Build chapter XHTML files ─────────────────────────────────────────
-    # images: filename → bytes  (collected while rendering rich chapters)
     images: dict[str, bytes] = {}
-
-    chapter_files: list[tuple[str, str, str]] = []   # (filename, title, xhtml)
+    chapter_files: list[tuple[str, str, str]] = []
 
     for chap_title, chap_data in raw_chapters:
         if chap_title.strip().lower() in SKIP_CHAPTERS:
@@ -263,7 +318,6 @@ def build_epub(
         xhtml = _chapter_xhtml(safe_chap_title, body_html)
         chapter_files.append((fname, safe_chap_title, xhtml))
 
-    # ── OPF manifest ──────────────────────────────────────────────────────
     image_manifest = "\n    ".join(
         f'<item id="img-{fn.replace(".", "-")}" href="images/{fn}" '
         f'media-type="image/{_img_media_type(fn)}"/>'
@@ -353,7 +407,6 @@ img{{max-width:100%;max-height:100%;display:block;margin:0 auto;}}</style>
 <body><img src="cover.png" alt="Cover"/></body>
 </html>"""
 
-    # ── Write ZIP ─────────────────────────────────────────────────────────
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             "mimetype", "application/epub+zip",
@@ -377,7 +430,6 @@ img{{max-width:100%;max-height:100%;display:block;margin:0 auto;}}</style>
             zf.writestr("OEBPS/cover.png", cover_png)
             zf.writestr("OEBPS/cover.xhtml", cover_xhtml)
 
-        # Inline images extracted from rich chapters
         for img_fname, img_bytes in images.items():
             zf.writestr(f"OEBPS/images/{img_fname}", img_bytes)
 
