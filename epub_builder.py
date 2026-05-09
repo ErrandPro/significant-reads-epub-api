@@ -133,13 +133,13 @@ def _render_spans(spans: list[dict]) -> str:
 
 
 def _render_text_lines(lines: list[dict], html: list[str]) -> None:
-    para_parts: list[str] = []
+    para_parts: list[str]      = []
     pending_dropcap_html: str | None = None
 
     for ln in lines:
-        spans = ln.get("spans", [])
+        spans      = ln.get("spans", [])
         is_section = ln.get("is_section", False)
-        rendered = _render_spans(spans).strip()
+        rendered   = _render_spans(spans).strip()
 
         if not rendered:
             continue
@@ -147,7 +147,7 @@ def _render_text_lines(lines: list[dict], html: list[str]) -> None:
         dropcap_char = ln.get("dropcap_char")
 
         if dropcap_char and pending_dropcap_html is None:
-            safe_dc = _sanitize(dropcap_char)
+            safe_dc              = _sanitize(dropcap_char)
             pending_dropcap_html = f'<span class="dropcap">{safe_dc}</span>'
 
         if is_section:
@@ -197,16 +197,16 @@ def _render_rich_blocks(
     images: dict[str, bytes],
     img_prefix: str,
 ) -> str:
-    html: list[str] = []
-    img_idx = 0
-    last_text_had_nearby_image = False
+    html: list[str]              = []
+    img_idx                      = 0
+    last_text_had_nearby_image   = False
 
     for blk in blocks:
         kind = blk.get("kind")
 
         if kind == "image":
             img_idx += 1
-            ext = blk.get("ext", "png")
+            ext   = blk.get("ext", "png")
             fname = f"{img_prefix}_{img_idx:03d}.{ext}"
             images[fname] = blk["data"]
 
@@ -233,7 +233,7 @@ def _render_rich_blocks(
             row_html: list[str] = []
 
             for ri, row in enumerate(rows):
-                tag = "th" if ri == 0 else "td"
+                tag   = "th" if ri == 0 else "td"
                 cells = "".join(
                     f"<{tag}>{_sanitize(cell)}</{tag}>" for cell in row
                 )
@@ -268,17 +268,17 @@ def _render_rich_blocks(
 
 
 def smart_join_paragraphs(text: str) -> list[str]:
-    lines = [l.rstrip() for l in text.split("\n")]
+    lines         = [l.rstrip() for l in text.split("\n")]
     content_lines = [l for l in lines if l.strip()]
-    blank_lines = [l for l in lines if not l.strip()]
+    blank_lines   = [l for l in lines if not l.strip()]
 
     dense_blank_mode = bool(
         content_lines and len(blank_lines) > len(content_lines) * 0.4
     )
 
-    paras: list[str] = []
+    paras: list[str]        = []
     current_words: list[str] = []
-    prev_ended_sentence = False
+    prev_ended_sentence      = False
 
     for line in lines:
         stripped = line.strip()
@@ -289,7 +289,7 @@ def smart_join_paragraphs(text: str) -> list[str]:
                 current_words = []
             continue
 
-        words_in_line = stripped.split()
+        words_in_line       = stripped.split()
         is_short_standalone = len(words_in_line) <= 4 and (
             not current_words or prev_ended_sentence
         )
@@ -303,7 +303,7 @@ def smart_join_paragraphs(text: str) -> list[str]:
                 current_words = []
 
             current_words.append(stripped)
-            clean_end = stripped.rstrip(' "\'»)')
+            clean_end           = stripped.rstrip(' "\'»)')
             prev_ended_sentence = bool(clean_end and clean_end[-1] in ".!?:")
         else:
             current_words.append(stripped)
@@ -316,11 +316,71 @@ def smart_join_paragraphs(text: str) -> list[str]:
 
 def _render_text_chapter(chap_content: str) -> str:
     safe_content = _sanitize(chap_content)
-    para_blocks = smart_join_paragraphs(safe_content)
+    para_blocks  = smart_join_paragraphs(safe_content)
 
     return "\n".join(
         f"<p>{block}</p>" for block in para_blocks if block.strip()
     )
+
+
+# ── Cover extraction ──────────────────────────────────────────────────────────
+
+
+def extract_cover_from_docx(docx_path: str) -> bytes | None:
+    """
+    Render the first page of a .docx file to a PNG for use as an EPUB cover.
+
+    Strategy (tried in order):
+      1. LibreOffice headless → PDF → PyMuPDF → PNG
+      2. Return None gracefully (EPUB will be generated without a cover)
+
+    The intermediate PDF is written to a temp directory and cleaned up after.
+    """
+    import tempfile
+    import shutil
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    tmp = tempfile.mkdtemp(prefix="docx_cover_")
+
+    try:
+        # Step 1: docx → pdf via LibreOffice
+        from processor import _find_soffice
+        import subprocess
+
+        soffice = _find_soffice()
+
+        result = subprocess.run(
+            [soffice, "--headless", "--convert-to", "pdf",
+             "--outdir", tmp, docx_path],
+            capture_output=True,
+            timeout=120,
+        )
+
+        if result.returncode != 0:
+            log.info(
+                f"LibreOffice cover render failed (exit {result.returncode}), "
+                "generating EPUB without a cover image."
+            )
+            return None
+
+        basename = os.path.splitext(os.path.basename(docx_path))[0]
+        pdf_tmp  = os.path.join(tmp, f"{basename}.pdf")
+
+        if not os.path.exists(pdf_tmp):
+            log.info("LibreOffice produced no PDF for cover, skipping.")
+            return None
+
+        # Step 2: first page → PNG via PyMuPDF (already a dependency)
+        return extract_cover_image(pdf_tmp)
+
+    except Exception as e:
+        log.info(f"DOCX cover extraction skipped: {e}")
+        return None
+
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ── EPUB assembly ─────────────────────────────────────────────────────────────
@@ -331,12 +391,33 @@ def build_epub(
     title: str,
     author: str,
     out_dir: str,
-    pdf_path: str | None = None,
+    pdf_path:  str | None = None,
+    docx_path: str | None = None,          # ← NEW: pass for Word-sourced EPUBs
     rich_chapters: list[tuple[str, list[dict]]] | None = None,
 ) -> str:
+    """
+    Assemble an EPUB file from structured content.
+
+    Parameters
+    ----------
+    text          : Plain-text fallback content (used when rich_chapters is None).
+    title         : Book title (used in metadata and filename).
+    author        : Author name.
+    out_dir       : Directory where the .epub will be written.
+    pdf_path      : Source PDF path (used for cover image extraction).
+    docx_path     : Source DOCX/DOC path (used for cover image when pdf_path
+                    is not provided).  LibreOffice must be installed for cover
+                    extraction from Word files.
+    rich_chapters : Pre-extracted rich chapters (list of (title, blocks)).
+                    When supplied, overrides plain-text chapter detection.
+
+    Returns
+    -------
+    Absolute path to the generated .epub file.
+    """
     safe_title = re.sub(r"[^\w\s-]", "", title).strip()
     safe_title = re.sub(r"\s+", "_", safe_title)
-    output = os.path.join(out_dir, f"{safe_title}.epub")
+    output     = os.path.join(out_dir, f"{safe_title}.epub")
 
     use_rich = rich_chapters is not None and len(rich_chapters) > 0
 
@@ -347,31 +428,37 @@ def build_epub(
             ("Content", text or "No content extracted.")
         ]
 
+    # ── Cover image ────────────────────────────────────────────────────────
     cover_png: bytes | None = None
 
     if pdf_path:
         cover_png = extract_cover_image(pdf_path)
 
-    images: dict[str, bytes] = {}
-    chapter_files: list[tuple[str, str, str]] = []
+    if cover_png is None and docx_path:
+        cover_png = extract_cover_from_docx(docx_path)
+
+    # ── Chapter rendering ──────────────────────────────────────────────────
+    images: dict[str, bytes]                       = {}
+    chapter_files: list[tuple[str, str, str]]      = []
 
     for chap_title, chap_data in raw_chapters:
         if chap_title.strip().lower() in SKIP_CHAPTERS:
             continue
 
         safe_chap_title = _sanitize(chap_title)
-        chap_num = len(chapter_files) + 1
-        fname = f"chap_{chap_num:02d}.xhtml"
+        chap_num        = len(chapter_files) + 1
+        fname           = f"chap_{chap_num:02d}.xhtml"
 
         if use_rich:
             img_prefix = f"chap{chap_num:02d}"
-            body_html = _render_rich_blocks(chap_data, images, img_prefix)
+            body_html  = _render_rich_blocks(chap_data, images, img_prefix)
         else:
-            body_html = _render_text_chapter(chap_data)
+            body_html  = _render_text_chapter(chap_data)
 
         xhtml = _chapter_xhtml(safe_chap_title, body_html)
         chapter_files.append((fname, safe_chap_title, xhtml))
 
+    # ── OPF manifests ──────────────────────────────────────────────────────
     image_manifest = "\n    ".join(
         f'<item id="img-{fn.replace(".", "-")}" href="images/{fn}" '
         f'media-type="image/{_img_media_type(fn)}"/>'
@@ -399,7 +486,7 @@ def build_epub(
     )
 
     cover_manifest = ""
-    cover_meta = ""
+    cover_meta     = ""
 
     if cover_png:
         cover_manifest = (
@@ -484,6 +571,7 @@ img {
 </body>
 </html>"""
 
+    # ── Write EPUB zip ─────────────────────────────────────────────────────
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             "mimetype",
@@ -523,10 +611,10 @@ def _img_media_type(filename: str) -> str:
     ext = filename.rsplit(".", 1)[-1].lower()
 
     return {
-        "jpg": "jpeg",
+        "jpg":  "jpeg",
         "jpeg": "jpeg",
-        "png": "png",
-        "gif": "gif",
+        "png":  "png",
+        "gif":  "gif",
         "webp": "webp",
-        "svg": "svg+xml",
+        "svg":  "svg+xml",
     }.get(ext, "png")
