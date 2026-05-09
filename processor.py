@@ -262,7 +262,9 @@ def extract_rich_chapters_from_docx(
 
         # ── 2. Walk state ──────────────────────────────────────────────────
         chapters:  list[tuple[str, list[dict]]] = []
-        state:     dict = {"title": "Front Matter", "blocks": []}
+        # FIX: empty string instead of "Front Matter" — no phantom chapter
+        # title is generated when content precedes the first real heading.
+        state:     dict = {"title": "", "blocks": []}
         cur_lines: list[dict] = []
         cur_kind   = "text"
 
@@ -456,6 +458,15 @@ def extract_rich_chapters_from_docx(
             (title, blocks)
             for title, blocks in chapters
             if not _is_toc_chapter(title, blocks)
+        ]
+
+        # ── 8. Drop any chapter whose title is blank and has no blocks ─────
+        # This cleans up the empty sentinel that replaced "Front Matter"
+        # when nothing precedes the first real heading.
+        chapters = [
+            (title, blocks)
+            for title, blocks in chapters
+            if title.strip() or blocks
         ]
 
         return chapters if chapters else None
@@ -1060,7 +1071,9 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
         section_min_size = body_size * 1.2
 
         chapters = []
-        state    = {"title": "Front Matter", "blocks": [], "lines": []}
+        # FIX: empty string instead of "Front Matter" — no phantom chapter
+        # title is generated when content precedes the first real heading.
+        state    = {"title": "", "blocks": [], "lines": []}
         seen_xrefs: set             = set()
         pending_heading_parts: list[str] = []
         pending_dropcap: str | None      = None
@@ -1208,6 +1221,15 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
 
         doc.close()
 
+        # FIX: drop the empty-title sentinel if it ended up with no blocks,
+        # or if it slipped through with a blank title but real content
+        # (content gets absorbed into the first named chapter instead).
+        chapters = [
+            (title, blocks)
+            for title, blocks in chapters
+            if title.strip() or blocks
+        ]
+
         return chapters if chapters else None
 
     except Exception as e:
@@ -1314,7 +1336,9 @@ def extract_chapters_from_text(text: str) -> list[tuple[str, str]]:
     lines     = lines[start_idx:]
 
     chapters: list[tuple[str, str]] = []
-    current_title   = "Front Matter"
+    # FIX: empty string instead of "Front Matter" — no phantom chapter title
+    # is emitted when content precedes the first real chapter heading.
+    current_title   = ""
     current_content: list[str] = []
 
     i = 0
@@ -1329,6 +1353,8 @@ def extract_chapters_from_text(text: str) -> list[tuple[str, str]]:
 
         if is_chapter_heading(s):
             content_text = "\n".join(current_content).strip()
+            # Only save the pre-heading content if there actually is some;
+            # an empty title with no content produces nothing.
             if content_text:
                 chapters.append((current_title, content_text))
             current_title   = s
