@@ -371,10 +371,12 @@ def extract_rich_chapters_from_docx(
                     for ib in img_blocks:
                         state["blocks"].append(ib)
 
-                # Normal text runs
+                # Normal text runs — flush after each paragraph so Word
+                # paragraph boundaries become separate <p> tags in the EPUB
                 spans = _para_to_spans(para)
                 if spans:
                     cur_lines.append({"spans": spans, "is_section": False})
+                    _flush_lines()
 
             # ── Table ─────────────────────────────────────────────────────
             elif local == "tbl":
