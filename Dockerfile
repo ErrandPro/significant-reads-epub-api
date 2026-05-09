@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     libmupdf-dev \
     curl \
+    libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
