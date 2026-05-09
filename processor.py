@@ -166,6 +166,39 @@ def extract_text_from_docx(docx_path: str) -> str:
         return ""
 
 
+def _is_toc_chapter(title: str, blocks: list[dict]) -> bool:
+    """
+    Detect whether a chapter is actually a Table of Contents.
+    Checks the title and also scans block text for TOC-like patterns
+    (lines ending in page numbers with dots/spaces).
+    """
+    title_lower = title.strip().lower()
+    toc_titles  = {"contents", "table of contents", "content", "toc"}
+    if title_lower in toc_titles:
+        return True
+
+    # Scan block text for TOC line patterns: "Some Title ........ 12"
+    toc_pattern = re.compile(r"\.{3,}\s*\d+\s*$|\s{3,}\d+\s*$")
+    toc_hits    = 0
+    total_lines = 0
+
+    for blk in blocks:
+        if blk.get("kind") != "text":
+            continue
+        for ln in blk.get("lines", []):
+            text = "".join(s.get("text", "") for s in ln.get("spans", []))
+            if text.strip():
+                total_lines += 1
+                if toc_pattern.search(text):
+                    toc_hits += 1
+
+    # If more than 40% of lines look like TOC entries, skip this chapter
+    if total_lines >= 4 and toc_hits / total_lines >= 0.40:
+        return True
+
+    return False
+
+
 def extract_rich_chapters_from_docx(
     docx_path: str,
 ) -> list[tuple[str, list[dict]]] | None:
@@ -311,30 +344,43 @@ def extract_rich_chapters_from_docx(
         # ── 3. Emit title page as first chapter ───────────────────────────
         # Collect all paragraphs before the first Heading 1 / Heading 7
         # and treat them as a title/front-matter chapter.
-        title_page_lines = []
+        # Each paragraph becomes its own block so epub_builder renders it
+        # as a separate <p> rather than merging everything into one wall of text.
+        title_page_paras = []
         for para in doc.paragraphs:
             sn = (para.style.name or "").lower().strip()
             if sn in ("heading 1", "heading 7"):
                 break
             text = para.text.strip()
             if text:
-                title_page_lines.append(text)
+                title_page_paras.append(para)
 
-        if title_page_lines:
-            book_title  = title_page_lines[0]
-            front_lines = title_page_lines[1:]
-            title_blocks = [{
-                "kind": "text",
-                "lines": [
-                    {
-                        "spans":      [{"text": t, "bold": False,
-                                        "italic": False, "size": body_size}],
-                        "is_section": False,
-                    }
-                    for t in front_lines
-                ],
-            }] if front_lines else []
-            chapters.append((book_title, title_blocks))
+        if title_page_paras:
+            book_title   = title_page_paras[0].text.strip()
+            front_paras  = title_page_paras[1:]
+
+            # ── Each paragraph → its own block so it renders as its own <p> ──
+            front_blocks: list[dict] = []
+            for fp in front_paras:
+                spans = _para_to_spans(fp)
+                if not spans:
+                    # Paragraph has no runs — use plain text as a single span
+                    plain = fp.text.strip()
+                    if plain:
+                        spans = [{"text": plain, "bold": False,
+                                  "italic": False, "size": body_size}]
+                if spans:
+                    front_blocks.append({
+                        "kind": "text",
+                        "lines": [
+                            {
+                                "spans":      spans,
+                                "is_section": False,
+                            }
+                        ],
+                    })
+
+            chapters.append((book_title, front_blocks))
 
         # ── 4. Collect floating text-boxes (sidebars) ─────────────────────
         sidebar_blocks: list[dict] = _extract_textboxes(doc, body_size)
@@ -404,6 +450,13 @@ def extract_rich_chapters_from_docx(
         # ── 6. Inject sidebar blocks into first chapter ────────────────────
         if sidebar_blocks and chapters:
             chapters[0][1].extend(sidebar_blocks)
+
+        # ── 7. Filter out TOC chapters ─────────────────────────────────────
+        chapters = [
+            (title, blocks)
+            for title, blocks in chapters
+            if not _is_toc_chapter(title, blocks)
+        ]
 
         return chapters if chapters else None
 
