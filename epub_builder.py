@@ -6,6 +6,14 @@ from processor import extract_chapters_from_text, extract_cover_image
 
 SKIP_CHAPTERS = {"contents", "table of contents", "content"}
 
+# Chapter titles that should use the front-matter page style
+# (centered, spaced, no text-indent) rather than the regular chapter template
+_FRONT_MATTER_TITLES = {
+    "front matter", "title page", "copyright", "dedication",
+    "acknowledgements", "acknowledgement", "acknowledgments", "acknowledgment",
+    "about the author", "about the authors", "preface", "foreword",
+}
+
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -86,6 +94,22 @@ _CHAPTER_CSS = """
     }
 """
 
+# CSS for front matter pages (title page, copyright, dedication, etc.)
+# Key differences: centered text, no text-indent, generous line spacing
+_FRONT_MATTER_CSS = """
+    body  { font-family: Arial, sans-serif; margin: 0pt 14pt;
+            line-height: 160%; color: #000; font-size: 1.09em; }
+    h1    { font-size: 1.5em; font-weight: bold; margin: 36pt 0pt 24pt;
+            text-align: center; line-height: 130%; }
+    p     { margin: 0pt 0pt 12pt; text-indent: 0;
+            text-align: center; line-height: 160%; }
+    p.left { text-align: left; }
+    strong { font-weight: bold; }
+    em     { font-style: italic; }
+    .img-wrap { text-align: center; margin: 1em 0; }
+    .img-wrap img { max-width: 95%; height: auto; }
+"""
+
 
 def _chapter_xhtml(chapter_title: str, body_html: str) -> str:
     safe_title = _sanitize(chapter_title)
@@ -101,6 +125,33 @@ def _chapter_xhtml(chapter_title: str, body_html: str) -> str:
   {body_html}
 </body>
 </html>"""
+
+
+def _front_matter_xhtml(chapter_title: str, body_html: str) -> str:
+    """
+    XHTML template for front matter pages: title page, copyright,
+    dedication, acknowledgements, etc.
+    Uses centered text with no indent and generous spacing so these
+    pages render cleanly instead of as a wall of text.
+    """
+    safe_title = _sanitize(chapter_title)
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>{safe_title}</title>
+  <style>/* <![CDATA[ */{_FRONT_MATTER_CSS}/* ]]> */</style>
+</head>
+<body>
+  <h1>{safe_title}</h1>
+  {body_html}
+</body>
+</html>"""
+
+
+def _is_front_matter_chapter(title: str) -> bool:
+    """Return True if this chapter title belongs to front matter."""
+    return title.strip().lower() in _FRONT_MATTER_TITLES
 
 
 # ── Rich rendering ────────────────────────────────────────────────────────────
@@ -392,7 +443,7 @@ def build_epub(
     author: str,
     out_dir: str,
     pdf_path:  str | None = None,
-    docx_path: str | None = None,          # ← NEW: pass for Word-sourced EPUBs
+    docx_path: str | None = None,
     rich_chapters: list[tuple[str, list[dict]]] | None = None,
 ) -> str:
     """
@@ -448,6 +499,7 @@ def build_epub(
         safe_chap_title = _sanitize(chap_title)
         chap_num        = len(chapter_files) + 1
         fname           = f"chap_{chap_num:02d}.xhtml"
+        is_front        = _is_front_matter_chapter(chap_title)
 
         if use_rich:
             img_prefix = f"chap{chap_num:02d}"
@@ -455,7 +507,12 @@ def build_epub(
         else:
             body_html  = _render_text_chapter(chap_data)
 
-        xhtml = _chapter_xhtml(safe_chap_title, body_html)
+        # Use the appropriate XHTML template based on chapter type
+        if is_front:
+            xhtml = _front_matter_xhtml(safe_chap_title, body_html)
+        else:
+            xhtml = _chapter_xhtml(safe_chap_title, body_html)
+
         chapter_files.append((fname, safe_chap_title, xhtml))
 
     # ── OPF manifests ──────────────────────────────────────────────────────
