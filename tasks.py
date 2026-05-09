@@ -4,7 +4,14 @@ import logging
 import time
 from celery import Celery
 from store import set_job, get_job, JobStatus, store_epub, EPUB_TTL_SECONDS
-from processor import extract_text_from_pdf, ocr_pdf_if_needed, extract_rich_chapters
+from processor import (
+    extract_text_from_pdf,
+    ocr_pdf_if_needed,
+    extract_rich_chapters,
+    extract_rich_chapters_from_docx,   # ← new
+    extract_text_from_docx,            # ← new
+    convert_doc_to_docx,               # ← new
+)
 from epub_builder import build_epub
 
 logger = logging.getLogger(__name__)
@@ -51,43 +58,25 @@ def _update(job_id: str, **kwargs):
     soft_time_limit=300,
     time_limit=360,
 )
-def convert_pdf_task(self, job_id: str, pdf_b64: str, title: str, author: str):
+def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, ext: str = ".pdf"):
     t0 = time.time()
     out_dir = f"/tmp/epub_out_{job_id}"
     os.makedirs(out_dir, exist_ok=True)
-    pdf_path = f"/tmp/pdf_in_{job_id}.pdf"
 
-    with open(pdf_path, "wb") as f:
-        f.write(base64.b64decode(pdf_b64))
+    # Write the uploaded file to disk with the correct extension
+    in_path = f"/tmp/file_in_{job_id}{ext}"
+    with open(in_path, "wb") as f:
+        f.write(base64.b64decode(file_b64))
 
     try:
-        # ── Stage 1: extraction ──────────────────────────────────────────
-        _update(job_id, status=JobStatus.EXTRACTING, progress=10)
-        logger.info(f"job_id={job_id} stage=extract")
-
-        # Try rich extraction first (images + tables + formatting).
-        # Falls back to plain-text pipeline automatically if quality is poor.
-        rich_chapters = _try_rich_extraction(pdf_path, job_id)
-
-        # Always extract plain text too — used as fallback and for word-count logging.
-        text = _extract_text(pdf_path, job_id)
-
-        # ── Stage 2: build EPUB ──────────────────────────────────────────
-        _update(job_id, status=JobStatus.BUILDING, progress=60)
-        logger.info(
-            f"job_id={job_id} stage=build "
-            f"words={len(text.split())} "
-            f"rich={'yes' if rich_chapters else 'no'}"
-        )
-
-        epub_path = build_epub(
-            text,
-            title,
-            author,
-            out_dir,
-            pdf_path=pdf_path,
-            rich_chapters=rich_chapters,
-        )
+        if ext == ".pdf":
+            epub_path = _pipeline_pdf(job_id, in_path, title, author, out_dir)
+        elif ext == ".docx":
+            epub_path = _pipeline_docx(job_id, in_path, title, author, out_dir)
+        elif ext == ".doc":
+            epub_path = _pipeline_doc(job_id, in_path, title, author, out_dir)
+        else:
+            raise ValueError(f"Unsupported file type: {ext}")
 
         if not os.path.exists(epub_path):
             raise RuntimeError("EPUB file was not created.")
@@ -108,28 +97,72 @@ def convert_pdf_task(self, job_id: str, pdf_b64: str, title: str, author: str):
         except self.MaxRetriesExceededError:
             _update(job_id, status=JobStatus.FAILED, error=f"Max retries exceeded: {exc}")
     finally:
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
+        if os.path.exists(in_path):
+            os.remove(in_path)
         import shutil
         if os.path.exists(out_dir):
             shutil.rmtree(out_dir, ignore_errors=True)
 
 
-# ── Extraction helpers ────────────────────────────────────────────────────────
+# ── Pipelines ─────────────────────────────────────────────────────────────────
 
-def _try_rich_extraction(
-    pdf_path: str, job_id: str
-) -> list[tuple[str, list[dict]]] | None:
-    """
-    Attempt rich chapter extraction (images, tables, formatting).
-    Returns None on any failure so the caller can fall back gracefully.
-    """
+def _pipeline_pdf(job_id: str, pdf_path: str, title: str, author: str, out_dir: str) -> str:
+    """Original PDF pipeline — unchanged."""
+    _update(job_id, status=JobStatus.EXTRACTING, progress=10)
+    logger.info(f"job_id={job_id} stage=extract type=pdf")
+
+    rich_chapters = _try_rich_extraction(pdf_path, job_id)
+    text = _extract_text(pdf_path, job_id)
+
+    _update(job_id, status=JobStatus.BUILDING, progress=60)
+    logger.info(
+        f"job_id={job_id} stage=build words={len(text.split())} "
+        f"rich={'yes' if rich_chapters else 'no'}"
+    )
+
+    return build_epub(
+        text, title, author, out_dir,
+        pdf_path=pdf_path,
+        rich_chapters=rich_chapters,
+    )
+
+
+def _pipeline_docx(job_id: str, docx_path: str, title: str, author: str, out_dir: str) -> str:
+    """DOCX pipeline — extracts rich chapters and plain text from Word file."""
+    _update(job_id, status=JobStatus.EXTRACTING, progress=10)
+    logger.info(f"job_id={job_id} stage=extract type=docx")
+
+    rich_chapters = _try_rich_extraction_docx(docx_path, job_id)
+    text = _extract_text_docx(docx_path, job_id)
+
+    _update(job_id, status=JobStatus.BUILDING, progress=60)
+    logger.info(
+        f"job_id={job_id} stage=build words={len(text.split())} "
+        f"rich={'yes' if rich_chapters else 'no'}"
+    )
+
+    return build_epub(
+        text, title, author, out_dir,
+        rich_chapters=rich_chapters,
+    )
+
+
+def _pipeline_doc(job_id: str, doc_path: str, title: str, author: str, out_dir: str) -> str:
+    """.doc pipeline — converts to .docx first, then runs the DOCX pipeline."""
+    _update(job_id, status=JobStatus.EXTRACTING, progress=5)
+    logger.info(f"job_id={job_id} stage=doc_to_docx")
+
+    docx_path = convert_doc_to_docx(doc_path, out_dir)   # produces a .docx in out_dir
+    return _pipeline_docx(job_id, docx_path, title, author, out_dir)
+
+
+# ── Extraction helpers — PDF ──────────────────────────────────────────────────
+
+def _try_rich_extraction(pdf_path: str, job_id: str) -> list[tuple[str, list[dict]]] | None:
     try:
         chapters = extract_rich_chapters(pdf_path)
         if chapters:
-            logger.info(
-                f"job_id={job_id} rich_extractor=ok chapters={len(chapters)}"
-            )
+            logger.info(f"job_id={job_id} rich_extractor=ok chapters={len(chapters)}")
         else:
             logger.info(f"job_id={job_id} rich_extractor=fallback")
         return chapters
@@ -174,3 +207,29 @@ def _pymupdf_extract(pdf_path: str) -> str:
         pages.append("\n".join(page_text))
     doc.close()
     return "\n\n".join(pages)
+
+
+# ── Extraction helpers — DOCX ─────────────────────────────────────────────────
+
+def _try_rich_extraction_docx(docx_path: str, job_id: str) -> list[tuple[str, list[dict]]] | None:
+    try:
+        chapters = extract_rich_chapters_from_docx(docx_path)
+        if chapters:
+            logger.info(f"job_id={job_id} rich_extractor_docx=ok chapters={len(chapters)}")
+        else:
+            logger.info(f"job_id={job_id} rich_extractor_docx=fallback")
+        return chapters
+    except Exception as e:
+        logger.warning(f"job_id={job_id} rich_extractor_docx_failed={e}")
+        return None
+
+
+def _extract_text_docx(docx_path: str, job_id: str) -> str:
+    try:
+        text = extract_text_from_docx(docx_path)
+        if text and len(text.strip()) > 100:
+            logger.info(f"job_id={job_id} extractor=docx chars={len(text)}")
+            return text
+    except Exception as e:
+        logger.warning(f"job_id={job_id} docx_extractor_failed={e}")
+    return ""
