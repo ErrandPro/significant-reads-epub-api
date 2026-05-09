@@ -31,7 +31,7 @@ _CHAPTER_CSS = """
             text-align: center; line-height: 120%; }
     h2    { font-size: 1.15em; font-weight: bold; margin: 16pt 0pt 6pt; }
     p     { margin: 0pt 0pt 8.5pt; text-indent: 14pt;
-            text-align: justify; line-height: 140%; widows: 0; orphans: 0; }
+            text-align: justify; line-height: 140%; }
     strong { font-weight: bold; }
     em     { font-style: italic; }
     table  { width: 100%; border-collapse: collapse; margin: 1em 0;
@@ -84,19 +84,26 @@ _CHAPTER_CSS = """
         font-style: italic;
     }
 
+    /* FIX 2: dropcap replaced float:left with inline-block to prevent
+       layout thrashing in browser-based EPUB renderers. */
     .dropcap {
-        float: left;
+        display: inline-block;
         font-size: 3em;
         line-height: 0.85;
         margin: 0.05em 0.06em 0 0;
         font-weight: bold;
         color: #1a1a1a;
+        vertical-align: top;
     }
 """
 
 # CSS for front matter pages (title page, copyright, dedication, etc.)
 # Key differences: centered text, no text-indent, generous line spacing
+# FIX 3: explicit box-sizing and min-height added so renderer doesn't reflow
+# when transitioning between cover/toc/chapter pages of different sizes.
 _FRONT_MATTER_CSS = """
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { width: 100%; min-height: 100%; }
     body  { font-family: Arial, sans-serif; margin: 0pt 14pt;
             line-height: 160%; color: #000; font-size: 1.09em; }
     h1    { font-size: 1.5em; font-weight: bold; margin: 36pt 0pt 24pt;
@@ -582,12 +589,17 @@ def build_epub(
   <navMap>{toc_nav_points}</navMap>
 </ncx>"""
 
+    # FIX 3: toc.xhtml gets explicit width:100% and box-sizing so the renderer
+    # establishes a stable viewport before the first chapter loads, eliminating
+    # the reflow jump when transitioning from cover → toc → chapter.
     toc_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <title>Table of Contents</title>
 <style>
+  *, *::before, *::after {{ box-sizing: border-box; }}
+  html, body {{ width: 100%; min-height: 100%; }}
   body {{ font-family: Arial, sans-serif; margin: 2em 1em; }}
   h1   {{ font-size: 1.4em; font-weight: bold; margin-bottom: 1em; text-align: center; }}
   ul   {{ list-style: none; padding: 0; }}
@@ -601,19 +613,24 @@ def build_epub(
 </body>
 </html>"""
 
+    # FIX 3: cover.xhtml gets the same box-sizing + stable viewport treatment
+    # so the renderer doesn't thrash dimensions when the cover is the first
+    # page displayed before transitioning to toc/chapters.
     cover_xhtml = """<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <title>Cover</title>
 <style>
-body {
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+    width: 100%;
+    min-height: 100%;
     margin: 0;
     padding: 0;
     text-align: center;
     background: #ffffff;
 }
-
 img {
     display: block;
     margin: 0 auto;
