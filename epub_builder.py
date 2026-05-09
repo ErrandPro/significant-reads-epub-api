@@ -133,7 +133,7 @@ def _chapter_xhtml(chapter_title: str, body_html: str) -> str:
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <title>{safe_title}</title>
-  <style>/* <![CDATA[ */{_CHAPTER_CSS}/* ]]> */</style>
+  <style><![CDATA[{_CHAPTER_CSS}]]></style>
 </head>
 <body>
 {h1_tag}  {body_html}
@@ -156,7 +156,7 @@ def _front_matter_xhtml(chapter_title: str, body_html: str) -> str:
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <title>{safe_title}</title>
-  <style>/* <![CDATA[ */{_FRONT_MATTER_CSS}/* ]]> */</style>
+  <style><![CDATA[{_FRONT_MATTER_CSS}]]></style>
 </head>
 <body>
 {h1_tag}  {body_html}
