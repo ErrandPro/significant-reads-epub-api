@@ -8,9 +8,9 @@ from processor import (
     extract_text_from_pdf,
     ocr_pdf_if_needed,
     extract_rich_chapters,
-    extract_rich_chapters_from_docx,   # ← new
-    extract_text_from_docx,            # ← new
-    convert_doc_to_docx,               # ← new
+    extract_rich_chapters_from_docx,
+    extract_text_from_docx,
+    convert_doc_to_docx,
 )
 from epub_builder import build_epub
 
@@ -63,7 +63,6 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
     out_dir = f"/tmp/epub_out_{job_id}"
     os.makedirs(out_dir, exist_ok=True)
 
-    # Write the uploaded file to disk with the correct extension
     in_path = f"/tmp/file_in_{job_id}{ext}"
     with open(in_path, "wb") as f:
         f.write(base64.b64decode(file_b64))
@@ -107,7 +106,6 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
 # ── Pipelines ─────────────────────────────────────────────────────────────────
 
 def _pipeline_pdf(job_id: str, pdf_path: str, title: str, author: str, out_dir: str) -> str:
-    """Original PDF pipeline — unchanged."""
     _update(job_id, status=JobStatus.EXTRACTING, progress=10)
     logger.info(f"job_id={job_id} stage=extract type=pdf")
 
@@ -128,7 +126,6 @@ def _pipeline_pdf(job_id: str, pdf_path: str, title: str, author: str, out_dir: 
 
 
 def _pipeline_docx(job_id: str, docx_path: str, title: str, author: str, out_dir: str) -> str:
-    """DOCX pipeline — extracts rich chapters and plain text from Word file."""
     _update(job_id, status=JobStatus.EXTRACTING, progress=10)
     logger.info(f"job_id={job_id} stage=extract type=docx")
 
@@ -143,16 +140,17 @@ def _pipeline_docx(job_id: str, docx_path: str, title: str, author: str, out_dir
 
     return build_epub(
         text, title, author, out_dir,
+        docx_path=docx_path,   # ← enables cover extraction from Word files
         rich_chapters=rich_chapters,
     )
 
 
 def _pipeline_doc(job_id: str, doc_path: str, title: str, author: str, out_dir: str) -> str:
-    """.doc pipeline — converts to .docx first, then runs the DOCX pipeline."""
     _update(job_id, status=JobStatus.EXTRACTING, progress=5)
     logger.info(f"job_id={job_id} stage=doc_to_docx")
 
-    docx_path = convert_doc_to_docx(doc_path, out_dir)   # produces a .docx in out_dir
+    # convert_doc_to_docx takes only doc_path and returns the .docx path
+    docx_path = convert_doc_to_docx(doc_path)
     return _pipeline_docx(job_id, docx_path, title, author, out_dir)
 
 
