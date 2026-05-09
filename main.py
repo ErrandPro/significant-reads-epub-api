@@ -16,8 +16,9 @@ logging.basicConfig(
     format='{"time":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}',
 )
 logger = logging.getLogger(__name__)
+
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="PDF→EPUB API", version="3.0.0")
+app = FastAPI(title="Document→EPUB API", version="3.1.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
@@ -26,12 +27,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc"}
+ALLOWED_DISPLAY    = "PDF, DOCX, or DOC"
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "3.0.0"}
+    return {"status": "ok", "version": "3.1.0"}
 
 
 @app.get("/ready")
@@ -49,23 +54,48 @@ def ready():
 @limiter.limit("10/minute")
 async def convert_pdf(
     request: Request,
-    pdf: UploadFile = File(...),
-    title: str = Form(...),
+    pdf: UploadFile = File(...),       # field name kept as "pdf" for backward compatibility
+    title:  str = Form(...),
     author: str = Form(...),
 ):
-    if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="File must be a PDF.")
+    # ── File type validation ───────────────────────────────────────────────
+    if not pdf.filename:
+        raise HTTPException(status_code=400, detail="No filename provided.")
+
+    ext = os.path.splitext(pdf.filename.lower())[1]   # e.g. ".pdf", ".docx", ".doc"
+
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Please upload a {ALLOWED_DISPLAY} file.",
+        )
+
+    # ── Size check ─────────────────────────────────────────────────────────
     raw = await pdf.read()
     if len(raw) > MAX_FILE_BYTES:
-        raise HTTPException(status_code=413, detail="PDF exceeds 50 MB limit.")
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds 50 MB limit.",
+        )
 
-    job_id = str(uuid.uuid4())
-    logger.info(f"job_id={job_id} filename={pdf.filename} size={len(raw)}")
+    # ── Queue the job ──────────────────────────────────────────────────────
+    job_id  = str(uuid.uuid4())
+    file_b64 = base64.b64encode(raw).decode("utf-8")
 
-    pdf_b64 = base64.b64encode(raw).decode("utf-8")
+    logger.info(
+        f"job_id={job_id} filename={pdf.filename} "
+        f"ext={ext} size={len(raw)}"
+    )
+
     set_job(job_id, {"status": JobStatus.QUEUED, "title": title, "author": author})
-    convert_pdf_task.delay(job_id, pdf_b64, title, author)
-    return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)
+
+    # Pass the file extension so the worker knows which pipeline to run
+    convert_pdf_task.delay(job_id, file_b64, title, author, ext)
+
+    return JSONResponse(
+        {"job_id": job_id, "status": JobStatus.QUEUED},
+        status_code=202,
+    )
 
 
 @app.get("/status/{job_id}")
@@ -82,14 +112,16 @@ async def download_epub(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
     if job.get("status") != JobStatus.DONE:
-        raise HTTPException(status_code=409, detail=f"Job not ready: {job.get('status')}")
-
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job not ready: {job.get('status')}",
+        )
     epub_bytes = get_epub(job_id)
     if not epub_bytes:
         raise HTTPException(status_code=410, detail="EPUB expired or missing.")
 
     safe_title = job.get("title", "book").replace(" ", "_")
-    # Clean up after serving
+
     delete_epub(job_id)
 
     return Response(
