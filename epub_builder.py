@@ -25,6 +25,10 @@ def _sanitize(text: str) -> str:
 
 
 _CHAPTER_CSS = """
+    /* Stable viewport anchor — prevents layout renegotiation on TOC navigation
+       and eliminates the blank/flicker when jumping between chapters. */
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { width: 100%; min-height: 100%; }
     body  { font-family: Arial, sans-serif; margin: 0pt 14pt;
             line-height: 140%; color: #000; font-size: 1.09em; }
     h1    { font-size: 1.4em;  font-weight: bold; margin: 28pt 0pt 14pt;
@@ -120,6 +124,10 @@ _FRONT_MATTER_CSS = """
 
 def _chapter_xhtml(chapter_title: str, body_html: str) -> str:
     safe_title = _sanitize(chapter_title)
+    # Only emit <h1> when there is an actual title — an empty <h1></h1>
+    # collapses the spine item to zero height in continuous scroll mode,
+    # making the chapter invisible when the user switches to that view.
+    h1_tag = f"  <h1>{safe_title}</h1>\n" if safe_title.strip() else ""
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -128,8 +136,7 @@ def _chapter_xhtml(chapter_title: str, body_html: str) -> str:
   <style>/* <![CDATA[ */{_CHAPTER_CSS}/* ]]> */</style>
 </head>
 <body>
-  <h1>{safe_title}</h1>
-  {body_html}
+{h1_tag}  {body_html}
 </body>
 </html>"""
 
@@ -142,6 +149,8 @@ def _front_matter_xhtml(chapter_title: str, body_html: str) -> str:
     pages render cleanly instead of as a wall of text.
     """
     safe_title = _sanitize(chapter_title)
+    # Same empty-title guard as _chapter_xhtml — no <h1> when title is blank.
+    h1_tag = f"  <h1>{safe_title}</h1>\n" if safe_title.strip() else ""
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -150,8 +159,7 @@ def _front_matter_xhtml(chapter_title: str, body_html: str) -> str:
   <style>/* <![CDATA[ */{_FRONT_MATTER_CSS}/* ]]> */</style>
 </head>
 <body>
-  <h1>{safe_title}</h1>
-  {body_html}
+{h1_tag}  {body_html}
 </body>
 </html>"""
 
