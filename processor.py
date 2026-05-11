@@ -732,7 +732,7 @@ def sort_blocks_into_columns(
     col_blocks = []
 
     for blk in blocks:
-        bbox    = blk.get("bbox", (0, 0, 0, 0))
+        bbox    = blk.get("bbox") or (0, 0, 0, 0)   # ← CHANGE 1: or instead of default=
         top_y   = bbox[1]
         col_idx = _block_column_index(bbox, columns, page_width)
 
@@ -753,7 +753,7 @@ def sort_blocks_into_columns(
     result: list[dict] = []
 
     for blk in sorted_col:
-        blk_top_y = blk["bbox"][1]
+        blk_top_y = (blk.get("bbox") or (0, 0, 0, 0))[1]   # ← CHANGE 2: .get().or not []
         while next_fw is not None and next_fw[0] <= blk_top_y:
             result.append(next_fw[1])
             next_fw = next(fw_iter, None)
@@ -1055,17 +1055,14 @@ def _join_paragraph_lines(lines: list[dict]) -> list[dict]:
 # ════════════════════════════════════════════════════════════════════════════
 
 def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
-
     try:
         import fitz
     except ImportError:
         logger.warning("PyMuPDF not available")
         return None
-
     try:
         doc   = fitz.open(pdf_path)
         sizes = []
-
         for page in doc:
             for blk in page.get_text("dict")["blocks"]:
                 if blk.get("type") != 0:
@@ -1074,16 +1071,13 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                     for sp in ln["spans"]:
                         if sp["text"].strip():
                             sizes.append(sp["size"])
-
         if not sizes:
             doc.close()
             return None
-
         sizes.sort()
         body_size        = sizes[len(sizes) // 2]
         chapter_min_size = body_size * 1.6
         section_min_size = body_size * 1.2
-
         chapters = []
         # FIX: empty string instead of "Front Matter" — no phantom chapter
         # title is generated when content precedes the first real heading.
@@ -1159,7 +1153,7 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
             for blk in ordered_blocks:
 
                 btype = blk.get("type")
-                bbox  = tuple(blk.get("bbox", (0, 0, 0, 0)))
+                bbox  = tuple(blk.get("bbox") or (0, 0, 0, 0))   # ← CHANGE 3
 
                 # BUG 1 FIX: check whether this block's bbox matches a table
                 # and emit it as a table block instead of treating it as text.
