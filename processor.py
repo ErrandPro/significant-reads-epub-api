@@ -1298,11 +1298,9 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
         for title, blocks in chapters:
             kinds = [b.get("kind") for b in blocks]
             logger.info(f"Chapter '{title}': {len(blocks)} blocks — {kinds}")
-
         return chapters if chapters else None
-
     except Exception as e:
-        logger.warning(f"extract_rich_chapters failed: {e}")
+        logger.warning(f"extract_rich_chapters_from_docx failed: {e}", exc_info=True)
         return None
 
 
