@@ -271,10 +271,17 @@ def _render_rich_blocks(
         kind = blk.get("kind")
 
         if kind == "image":
+            # EPUB defensive guard: skip image blocks with no or empty data.
+            # An empty file written into the EPUB zip corrupts the reader's
+            # media-type validation and can make the entire book unreadable.
+            img_data = blk.get("data")
+            if not img_data:
+                continue
+
             img_idx += 1
             ext   = blk.get("ext", "png")
             fname = f"{img_prefix}_{img_idx:03d}.{ext}"
-            images[fname] = blk["data"]
+            images[fname] = img_data
 
             if last_text_had_nearby_image:
                 html.append(
