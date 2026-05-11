@@ -476,7 +476,11 @@ def extract_rich_chapters_from_docx(
             for title, blocks in chapters
             if title.strip() or blocks
         ]
-
+        
+ for title, blocks in chapters:
+    kinds = [b.get("kind") for b in blocks]
+    logger.info(f"Chapter '{title}': {len(blocks)} blocks — {kinds}")
+    
         return chapters if chapters else None
 
     except Exception as e:
@@ -1291,6 +1295,9 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
             for title, blocks in chapters
             if title.strip() or blocks
         ]
+        for title, blocks in chapters:
+            kinds = [b.get("kind") for b in blocks]
+            logger.info(f"Chapter '{title}': {len(blocks)} blocks — {kinds}")
 
         return chapters if chapters else None
 
