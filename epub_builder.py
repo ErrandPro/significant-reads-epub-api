@@ -1,8 +1,11 @@
 import os
 import re
 import zipfile
+import logging
 
 from processor import extract_chapters_from_text, extract_cover_image
+
+logger = logging.getLogger(__name__)
 
 SKIP_CHAPTERS = {"contents", "table of contents", "content"}
 
@@ -263,25 +266,28 @@ def _render_rich_blocks(
     images: dict[str, bytes],
     img_prefix: str,
 ) -> str:
-    html: list[str]              = []
-    img_idx                      = 0
-    last_text_had_nearby_image   = False
+    html: list[str]            = []
+    img_idx                    = 0
+    last_text_had_nearby_image = False
 
     for blk in blocks:
         kind = blk.get("kind")
 
         if kind == "image":
-            # EPUB defensive guard: skip image blocks with no or empty data.
-            # An empty file written into the EPUB zip corrupts the reader's
-            # media-type validation and can make the entire book unreadable.
             img_data = blk.get("data")
             if not img_data:
+                logger.warning(
+                    f"[{img_prefix}] image block skipped — no data present"
+                )
                 continue
 
             img_idx += 1
             ext   = blk.get("ext", "png")
             fname = f"{img_prefix}_{img_idx:03d}.{ext}"
             images[fname] = img_data
+            logger.info(
+                f"[{img_prefix}] image written: {fname} ({len(img_data)} bytes)"
+            )
 
             if last_text_had_nearby_image:
                 html.append(
@@ -299,12 +305,15 @@ def _render_rich_blocks(
 
         elif kind == "table":
             rows = blk.get("rows", [])
-
             if not rows:
+                logger.warning(f"[{img_prefix}] table block skipped — no rows")
                 continue
 
+            logger.info(
+                f"[{img_prefix}] table written: {len(rows)} rows x "
+                f"{len(rows[0]) if rows else 0} cols"
+            )
             row_html: list[str] = []
-
             for ri, row in enumerate(rows):
                 tag   = "th" if ri == 0 else "td"
                 cells = "".join(
@@ -317,23 +326,23 @@ def _render_rich_blocks(
 
         elif kind == "sidebar":
             rendered = _render_sidebar_block(blk)
-
             if rendered:
                 html.append(rendered)
-
             last_text_had_nearby_image = blk.get("nearby_image", False)
 
         elif kind == "text":
             lines = blk.get("lines", [])
-
             if not lines:
                 continue
-
             block_html: list[str] = []
             _render_text_lines(lines, block_html)
             html.extend(block_html)
             last_text_had_nearby_image = blk.get("nearby_image", False)
 
+    logger.info(
+        f"[{img_prefix}] render complete — "
+        f"{img_idx} image(s), {len(html)} html block(s)"
+    )
     return "\n".join(html)
 
 
