@@ -477,9 +477,9 @@ def extract_rich_chapters_from_docx(
             if title.strip() or blocks
         ]
         
- for title, blocks in chapters:
-    kinds = [b.get("kind") for b in blocks]
-    logger.info(f"Chapter '{title}': {len(blocks)} blocks — {kinds}")
+        for title, blocks in chapters:
+            kinds = [b.get("kind") for b in blocks]
+            logger.info(f"Chapter '{title}': {len(blocks)} blocks — {kinds}")
     
         return chapters if chapters else None
 
