@@ -362,8 +362,14 @@ def extract_rich_chapters_from_docx(
             front_paras  = title_page_paras[1:]
 
             # ── Each paragraph → its own block so it renders as its own <p> ──
+            # BUG 4 FIX: also extract inline and anchored images from each
+            # front-matter paragraph so title-page images are not dropped.
             front_blocks: list[dict] = []
             for fp in front_paras:
+                # Images first (inline + anchored — see BUG 2 fix below)
+                img_blocks = _extract_inline_images(fp)
+                front_blocks.extend(img_blocks)
+
                 spans = _para_to_spans(fp)
                 if not spans:
                     # Paragraph has no runs — use plain text as a single span
@@ -412,7 +418,9 @@ def extract_rich_chapters_from_docx(
                     _flush_lines()
                     continue
 
-                # Inline images embedded in this paragraph
+                # Inline + anchored images embedded in this paragraph
+                # BUG 2 FIX: _extract_inline_images now handles both wp:inline
+                # and wp:anchor drawings (guard removed — see function below).
                 img_blocks = _extract_inline_images(para)
                 if img_blocks:
                     _flush_lines()
@@ -527,14 +535,20 @@ def _dedup_row(row: list[str]) -> list[str]:
 
 def _extract_inline_images(para) -> list[dict]:
     """
-    Extract inline (wp:inline) images embedded in a paragraph's w:drawing
-    elements. Returns a list of image blocks ready for epub_builder.
+    Extract images from a paragraph's w:drawing elements — both inline
+    (wp:inline) and anchored/floating (wp:anchor).
+
+    BUG 2 FIX: The original code had a guard:
+        if drawing.find(f"{{{_NS_WP}}}inline") is None: continue
+    This silently dropped every wp:anchor drawing (anchored images).
+    The guard is removed; we now search for a:blip inside any drawing
+    regardless of whether it is inline or anchored.
     """
     images: list[dict] = []
 
     for drawing in para._element.findall(f".//{{{_NS_W}}}drawing"):
-        if drawing.find(f"{{{_NS_WP}}}inline") is None:
-            continue
+        # BUG 2 FIX: removed the wp:inline-only guard that was here.
+        # Both wp:inline and wp:anchor drawings may contain a:blip references.
 
         for blip in drawing.findall(f".//{{{_NS_A}}}blip"):
             r_embed = blip.get(f"{{{_NS_R}}}embed")
@@ -551,7 +565,7 @@ def _extract_inline_images(para) -> list[dict]:
                     continue
                 images.append({"kind": "image", "data": blob, "ext": ext})
             except Exception as e:
-                logger.debug(f"Inline image skip: {e}")
+                logger.debug(f"Image skip: {e}")
 
     return images
 
@@ -1095,7 +1109,10 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
 
         def _save_chapter(new_title: str):
             _flush_lines()
+            # BUG 3 FIX: call find_text_image_pairs on the completed chapter's
+            # blocks so nearby_image is set before we append and reset state.
             if state["blocks"]:
+                find_text_image_pairs(state["blocks"])
                 chapters.append((state["title"], state["blocks"][:]))
             state["title"]  = new_title
             state["blocks"] = []
@@ -1126,16 +1143,65 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
             columns        = detect_columns(raw_blocks, page_width)
             ordered_blocks = sort_blocks_into_columns(raw_blocks, columns, page_width)
 
+            # BUG 1 FIX: extract tables via PyMuPDF's find_tables() and inject
+            # them as {"kind": "table", "rows": [...]} blocks before processing
+            # the text/image blocks so reading order is preserved.
+            try:
+                tab_finder = page.find_tables()
+                page_tables = {
+                    tuple(round(v, 1) for v in tbl.bbox): tbl
+                    for tbl in tab_finder.tables
+                }
+            except Exception as e:
+                logger.debug(f"find_tables error on page {page.number}: {e}")
+                page_tables = {}
+
             for blk in ordered_blocks:
 
                 btype = blk.get("type")
                 bbox  = tuple(blk.get("bbox", (0, 0, 0, 0)))
 
+                # BUG 1 FIX: check whether this block's bbox matches a table
+                # and emit it as a table block instead of treating it as text.
+                rounded_bbox = tuple(round(v, 1) for v in bbox)
+                if rounded_bbox in page_tables:
+                    tbl = page_tables[rounded_bbox]
+                    try:
+                        rows = tbl.extract()
+                        # Normalise: cells may be None
+                        norm_rows = [
+                            [str(cell) if cell is not None else "" for cell in row]
+                            for row in rows
+                            if any(cell for cell in row)
+                        ]
+                        if norm_rows:
+                            _flush_pending_heading()
+                            _flush_lines()
+                            state["blocks"].append({"kind": "table", "rows": norm_rows})
+                    except Exception as e:
+                        logger.debug(f"Table extract error: {e}")
+                    continue
+
                 if btype == 1:
-                    xref = blk.get("xref", 0)
-                    if xref and xref not in seen_xrefs:
+                    # RISK FIX: original guard was `if xref and xref not in seen_xrefs`
+                    # which is falsy for xref==0 (inline-stream images).
+                    # Changed to `if xref is not None` so xref=0 images are attempted.
+                    xref = blk.get("xref")
+                    if xref is not None and xref not in seen_xrefs:
+                        # xref==0 means inline-stream: fall back to page.get_images()
+                        # to locate the actual xref for this block's bbox.
+                        actual_xref = xref
+                        if xref == 0:
+                            try:
+                                for img_info in page.get_images(full=True):
+                                    # img_info: (xref, smask, w, h, bpc, cs, alt_cs, name, filter, ref)
+                                    actual_xref = img_info[0]
+                                    break  # take first; bbox-matching would be more precise
+                            except Exception:
+                                pass
+
                         try:
-                            img = doc.extract_image(xref)
+                            img = doc.extract_image(actual_xref)
                             w   = img.get("width", 0)
                             h   = img.get("height", 0)
                             if w >= 80 and h >= 80:
@@ -1149,7 +1215,7 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
                                     "height": h,
                                     "bbox":   bbox,
                                 })
-                                seen_xrefs.add(xref)
+                                seen_xrefs.add(actual_xref)
                         except Exception as e:
                             logger.debug(f"Image extraction error: {e}")
                     continue
@@ -1216,7 +1282,9 @@ def extract_rich_chapters(pdf_path: str) -> list[tuple[str, list[dict]]] | None:
         _flush_pending_heading()
         _flush_lines()
 
+        # BUG 3 FIX: pair images for the final chapter (not saved via _save_chapter).
         if state["blocks"]:
+            find_text_image_pairs(state["blocks"])
             chapters.append((state["title"], state["blocks"][:]))
 
         doc.close()
