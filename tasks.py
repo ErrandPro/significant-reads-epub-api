@@ -58,7 +58,7 @@ def _update(job_id: str, **kwargs):
     soft_time_limit=300,
     time_limit=360,
 )
-def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, ext: str = ".pdf"):
+def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, ext: str = ".pdf", subtitle: str | None = None):
     t0 = time.time()
     out_dir = f"/tmp/epub_out_{job_id}"
     os.makedirs(out_dir, exist_ok=True)
@@ -69,11 +69,11 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
 
     try:
         if ext == ".pdf":
-            epub_path = _pipeline_pdf(job_id, in_path, title, author, out_dir)
+            epub_path = _pipeline_pdf(job_id, in_path, title, author, subtitle, out_dir)
         elif ext == ".docx":
-            epub_path = _pipeline_docx(job_id, in_path, title, author, out_dir)
+            epub_path = _pipeline_docx(job_id, in_path, title, author, subtitle, out_dir)
         elif ext == ".doc":
-            epub_path = _pipeline_doc(job_id, in_path, title, author, out_dir)
+            epub_path = _pipeline_doc(job_id, in_path, title, author, subtitle, out_dir)
         else:
             raise ValueError(f"Unsupported file type: {ext}")
 
@@ -105,7 +105,7 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
 
 # ── Pipelines ─────────────────────────────────────────────────────────────────
 
-def _pipeline_pdf(job_id: str, pdf_path: str, title: str, author: str, out_dir: str) -> str:
+def _pipeline_pdf(job_id: str, pdf_path: str, title: str, author: str, subtitle: str | None, out_dir: str) -> str:
     _update(job_id, status=JobStatus.EXTRACTING, progress=10)
     logger.info(f"job_id={job_id} stage=extract type=pdf")
 
@@ -122,10 +122,11 @@ def _pipeline_pdf(job_id: str, pdf_path: str, title: str, author: str, out_dir: 
         text, title, author, out_dir,
         pdf_path=pdf_path,
         rich_chapters=rich_chapters,
+        subtitle=subtitle,
     )
 
 
-def _pipeline_docx(job_id: str, docx_path: str, title: str, author: str, out_dir: str) -> str:
+def _pipeline_docx(job_id: str, docx_path: str, title: str, author: str, subtitle: str | None, out_dir: str) -> str:
     _update(job_id, status=JobStatus.EXTRACTING, progress=10)
     logger.info(f"job_id={job_id} stage=extract type=docx")
 
@@ -140,18 +141,18 @@ def _pipeline_docx(job_id: str, docx_path: str, title: str, author: str, out_dir
 
     return build_epub(
         text, title, author, out_dir,
-        docx_path=docx_path,   # ← enables cover extraction from Word files
+        docx_path=docx_path,
         rich_chapters=rich_chapters,
+        subtitle=subtitle,
     )
 
 
-def _pipeline_doc(job_id: str, doc_path: str, title: str, author: str, out_dir: str) -> str:
+def _pipeline_doc(job_id: str, doc_path: str, title: str, author: str, subtitle: str | None, out_dir: str) -> str:
     _update(job_id, status=JobStatus.EXTRACTING, progress=5)
     logger.info(f"job_id={job_id} stage=doc_to_docx")
 
-    # convert_doc_to_docx takes only doc_path and returns the .docx path
     docx_path = convert_doc_to_docx(doc_path)
-    return _pipeline_docx(job_id, docx_path, title, author, out_dir)
+    return _pipeline_docx(job_id, docx_path, title, author, subtitle, out_dir)
 
 
 # ── Extraction helpers — PDF ──────────────────────────────────────────────────
