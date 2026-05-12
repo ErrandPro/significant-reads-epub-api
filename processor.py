@@ -394,63 +394,66 @@ def extract_rich_chapters_from_docx(
         sidebar_blocks: list[dict] = _extract_textboxes(doc, body_size)
 
         # ── 5. Iterate top-level body children ────────────────────────────
-        for elem in doc.element.body:
-            local = _local(elem.tag)
+        CHUNK_SIZE = 500
 
-            # ── Paragraph ─────────────────────────────────────────────────
-            if local == "p":
-                para  = DocxPara(elem, doc)
-                level = _para_heading_level(para)
-                text  = para.text.strip()
+        all_elements = list(doc.element.body)
+        total = len(all_elements)
 
-                if level == 1 and text:
-                    _flush_chapter(text)
-                    continue
+        for chunk_start in range(0, total, CHUNK_SIZE):
+            chunk = all_elements[chunk_start : chunk_start + CHUNK_SIZE]
 
-                if level == 2 and text:
-                    _flush_lines()
-                    max_sz = _para_max_size(para, body_size)
-                    cur_lines.append({
-                        "spans":      [{"text": text, "bold": True,
-                                        "italic": False, "size": max_sz}],
-                        "is_section": True,
-                    })
-                    _flush_lines()
-                    continue
-
-                # Inline + anchored images embedded in this paragraph
-                # BUG 2 FIX: _extract_inline_images now handles both wp:inline
-                # and wp:anchor drawings (guard removed — see function below).
-                img_blocks = _extract_inline_images(para)
-                if img_blocks:
-                    _flush_lines()
-                    for ib in img_blocks:
-                        state["blocks"].append(ib)
-
-                # Normal text runs — flush after each paragraph so Word
-                # paragraph boundaries become separate <p> tags in the EPUB
-                spans = _para_to_spans(para)
-                if spans:
-                    cur_lines.append({"spans": spans, "is_section": False})
-                    _flush_lines()
-
-            # ── Table ─────────────────────────────────────────────────────
-            elif local == "tbl":
-                try:
-                    table = DocxTable(elem, doc)
-                    rows  = [
-                        [c.text.strip() for c in row.cells]
-                        for row in table.rows
-                    ]
-                    deduped = [_dedup_row(r) for r in rows if any(r)]
-                    if deduped:
+            for elem in chunk:
+                local = _local(elem.tag)
+                # ── Paragraph ─────────────────────────────────────────────
+                if local == "p":
+                    para  = DocxPara(elem, doc)
+                    level = _para_heading_level(para)
+                    text  = para.text.strip()
+                    if level == 1 and text:
+                        _flush_chapter(text)
+                        continue
+                    if level == 2 and text:
                         _flush_lines()
-                        state["blocks"].append({"kind": "table", "rows": deduped})
-                except Exception as e:
-                    logger.debug(f"Table extraction error: {e}")
+                        max_sz = _para_max_size(para, body_size)
+                        cur_lines.append({
+                            "spans":      [{"text": text, "bold": True,
+                                            "italic": False, "size": max_sz}],
+                            "is_section": True,
+                        })
+                        _flush_lines()
+                        continue
+                    # Inline + anchored images embedded in this paragraph
+                    # BUG 2 FIX: _extract_inline_images now handles both wp:inline
+                    # and wp:anchor drawings (guard removed — see function below).
+                    img_blocks = _extract_inline_images(para)
+                    if img_blocks:
+                        _flush_lines()
+                        for ib in img_blocks:
+                            state["blocks"].append(ib)
+                    # Normal text runs — flush after each paragraph so Word
+                    # paragraph boundaries become separate <p> tags in the EPUB
+                    spans = _para_to_spans(para)
+                    if spans:
+                        cur_lines.append({"spans": spans, "is_section": False})
+                        _flush_lines()
+                # ── Table ─────────────────────────────────────────────────
+                elif local == "tbl":
+                    try:
+                        table = DocxTable(elem, doc)
+                        rows  = [
+                            [c.text.strip() for c in row.cells]
+                            for row in table.rows
+                        ]
+                        deduped = [_dedup_row(r) for r in rows if any(r)]
+                        if deduped:
+                            _flush_lines()
+                            state["blocks"].append({"kind": "table", "rows": deduped})
+                    except Exception as e:
+                        logger.debug(f"Table extraction error: {e}")
+                else:
+                    continue
 
-            else:
-                continue
+            logger.info(f"Processed elements {chunk_start}–{min(chunk_start + CHUNK_SIZE, total)} of {total}")
 
         # Flush remaining content
         _flush_lines()
@@ -1004,9 +1007,10 @@ def _is_toc_page(page, body_size: float) -> bool:
 
 def _line_x0(line) -> float:
     spans = line.get("spans", [])
-    if not spans:
-        return 0
-    return spans[0]["bbox"][0]
+    for span in spans:
+        if "bbox" in span:
+            return span["bbox"][0]
+    return 0
 
 
 def _join_paragraph_lines(lines: list[dict]) -> list[dict]:
