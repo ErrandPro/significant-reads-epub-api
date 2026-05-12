@@ -554,11 +554,12 @@ def _extract_inline_images(para) -> list[dict]:
         # BUG 2 FIX: removed the wp:inline-only guard that was here.
         # Both wp:inline and wp:anchor drawings may contain a:blip references.
 
-        for blip in drawing.findall(f".//{{{_NS_A}}}blip"):
+      for blip in drawing.findall(f".//{{{_NS_A}}}blip"):
             r_embed = blip.get(f"{{{_NS_R}}}embed")
             if not r_embed:
                 continue
             try:
+                logger.debug(f"Image rId={r_embed} rels={list(para.part.rels.keys())}")
                 rel  = para.part.rels[r_embed]
                 blob = rel.target_part.blob
                 ct   = rel.target_part.content_type
@@ -570,7 +571,6 @@ def _extract_inline_images(para) -> list[dict]:
                 images.append({"kind": "image", "data": blob, "ext": ext})
             except Exception as e:
                 logger.debug(f"Image skip: {e}")
-
     return images
 
 
