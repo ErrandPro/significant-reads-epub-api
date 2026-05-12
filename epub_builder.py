@@ -476,6 +476,7 @@ def build_epub(
     pdf_path:  str | None = None,
     docx_path: str | None = None,
     rich_chapters: list[tuple[str, list[dict]]] | None = None,
+    subtitle: str | None = None,
 ) -> str:
     """
     Assemble an EPUB file from structured content.
@@ -520,31 +521,41 @@ def build_epub(
         cover_png = extract_cover_from_docx(docx_path)
 
     # ── Chapter rendering ──────────────────────────────────────────────────
-    images: dict[str, bytes]                       = {}
+images: dict[str, bytes]                       = {}
     chapter_files: list[tuple[str, str, str]]      = []
+
+    # ── Generated title page (always first) ───────────────────────────────
+    subtitle_html = (
+        f'<p style="font-size:1.5em; margin-top:0.8em; text-indent:0; font-style:italic;">'
+        f'{_sanitize(subtitle)}</p>'
+    ) if subtitle and subtitle.strip() else ""
+
+    title_page_html = f"""
+  <div style="text-align:center; margin-top: 30%;">
+    <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0;">
+      {_sanitize(title)}
+    </p>
+    {subtitle_html}
+    <p style="font-size:1.3em; margin-top:1.5em; text-indent:0;">
+      {_sanitize(author)}
+    </p>
+  </div>
+"""
+    title_page_xhtml = _front_matter_xhtml("", title_page_html)
+    chapter_files.append(("chap_00.xhtml", _sanitize(title), title_page_xhtml))
 
     for chap_title, chap_data in raw_chapters:
         if chap_title.strip().lower() in SKIP_CHAPTERS:
             continue
-
         safe_chap_title = _sanitize(chap_title)
         chap_num        = len(chapter_files) + 1
         fname           = f"chap_{chap_num:02d}.xhtml"
         is_front        = _is_front_matter_chapter(chap_title)
-
         if use_rich:
             img_prefix = f"chap{chap_num:02d}"
             body_html  = _render_rich_blocks(chap_data, images, img_prefix)
         else:
             body_html  = _render_text_chapter(chap_data)
-
-        # Use the appropriate XHTML template based on chapter type
-        if is_front:
-            xhtml = _front_matter_xhtml(safe_chap_title, body_html)
-        else:
-            xhtml = _chapter_xhtml(safe_chap_title, body_html)
-
-        chapter_files.append((fname, safe_chap_title, xhtml))
 
     # ── OPF manifests ──────────────────────────────────────────────────────
     image_manifest = "\n    ".join(
