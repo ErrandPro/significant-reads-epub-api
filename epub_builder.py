@@ -597,19 +597,27 @@ def build_epub(
         chapter_files.append((fname, safe_chap_title, xhtml))
         
     # ── OPF manifests ──────────────────────────────────────────────────────
+    FRONT_MATTER_TITLES = {'copyright', 'dedication', 'acknowledgements', 'foreword', 'preface'}
+
     image_manifest = "\n    ".join(
         f'<item id="img-{fn.replace(".", "-")}" href="images/{fn}" '
         f'media-type="image/{_img_media_type(fn)}"/>'
         for fn in images
     )
-
     chapter_manifest = "\n    ".join(
         f'<item id="chap{i+1}" href="{fname}" media-type="application/xhtml+xml"/>'
         for i, (fname, _, __) in enumerate(chapter_files)
     )
 
-    spine_items = "\n    ".join(
-        f'<itemref idref="chap{i+1}"/>' for i in range(len(chapter_files))
+    front_spine_items = "\n    ".join(
+        f'<itemref idref="chap{i+1}"/>'
+        for i, (_, ct, __) in enumerate(chapter_files)
+        if ct.lower().strip() in FRONT_MATTER_TITLES
+    )
+    main_spine_items = "\n    ".join(
+        f'<itemref idref="chap{i+1}"/>'
+        for i, (_, ct, __) in enumerate(chapter_files)
+        if ct.lower().strip() not in FRONT_MATTER_TITLES
     )
 
     toc_nav_points = "\n    ".join(
@@ -618,21 +626,17 @@ def build_epub(
         f'<content src="{fn}"/></navPoint>'
         for i, (fn, ct, _) in enumerate(chapter_files)
     )
-
     toc_links = "\n".join(
         f'<li><a href="{fn}">{ct}</a></li>' for fn, ct, _ in chapter_files
     )
-
     cover_manifest = ""
     cover_meta     = ""
-
     if cover_png:
         cover_manifest = (
             '<item id="cover-img" href="cover.png" media-type="image/png"/>\n    '
             '<item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>'
         )
         cover_meta = '<meta name="cover" content="cover-img"/>'
-
     opf = f"""<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -644,18 +648,18 @@ def build_epub(
   </metadata>
   <manifest>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-    <item id="toc" href="toc.xhtml" media-type="application/xhtml+xml"/>
+    <item id="toc" href="toc.xhtml" media-type="application/xhtml+xml" properties="nav"/>
     {cover_manifest}
     {chapter_manifest}
     {image_manifest}
   </manifest>
   <spine toc="ncx">
     {'<itemref idref="cover-page"/>' if cover_png else ''}
+    {front_spine_items}
     <itemref idref="toc"/>
-    {spine_items}
+    {main_spine_items}
   </spine>
 </package>"""
-
     ncx = f"""<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head><meta name="dtb:uid" content="id-{safe_title}"/></head>
