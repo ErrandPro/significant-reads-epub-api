@@ -298,9 +298,12 @@ def _render_rich_blocks(
             logger.info(
                 f"[{img_prefix}] image written: {fname} ({len(img_data)} bytes)"
             )
+            w = blk.get("width", 0)
+            h = blk.get("height", 0)
+            dim = f' width="{w}" height="{h}"' if w and h else ""
             html.append(
                 f'<div class="img-wrap">'
-                f'<img src="images/{fname}" alt=""/>'
+                f'<img src="images/{fname}" alt=""{dim}/>'
                 f'</div>'
             )
 
@@ -551,7 +554,7 @@ def build_epub(
     ) if subtitle and subtitle.strip() else ""
 
     title_page_html = f"""
-  <table style="width:100%; height:90vh; border:none; border-collapse:collapse;">
+  <table style="width:100%; height:600pt; border:none; border-collapse:collapse;">
     <tr style="vertical-align:top;">
       <td style="text-align:center; padding-top:8%;">
         <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0; margin-bottom:0.3em;">
@@ -723,7 +726,7 @@ img {
     display: block;
     margin: 0 auto;
     max-width: 100%;
-    max-height: 100vh;
+    max-height: 800pt;
     height: auto;
 }
 </style>
