@@ -46,6 +46,10 @@ _CHAPTER_CSS = """
             text-align: justify; line-height: 140%; }
     strong { font-weight: bold; }
     em     { font-style: italic; }
+    ul, ol { margin: 0.5em 0 0.8em 1.5em; padding: 0; }
+    li     { margin: 0.2em 0; text-indent: 0; line-height: 145%; }
+    ul li  { list-style-type: disc; }
+    ol li  { list-style-type: decimal; }
     table  { width: 100%; border-collapse: collapse; margin: 1em 0;
              font-size: 0.95em; }
     th     { background: #f0f0f0; font-weight: bold; text-align: left;
@@ -266,16 +270,52 @@ def _render_sidebar_block(blk: dict) -> str:
     return f'<div class="sidebar">\n{"".join(inner)}\n</div>'
 
 
+def _render_line_content(line: dict) -> str:
+    """Render a single line's spans as inline HTML (no wrapping <p> tag)."""
+    return _render_spans(line.get("spans", [])).strip()
+    
+
 def _render_rich_blocks(
     blocks: list[dict],
     images: dict[str, bytes],
     img_prefix: str,
 ) -> str:
-    html: list[str] = []
-    img_idx         = 0
+    html: list[str]            = []
+    img_idx                    = 0
+    last_text_had_nearby_image = False
 
-    for blk in blocks:
+    i = 0
+    while i < len(blocks):
+        blk  = blocks[i]
         kind = blk.get("kind")
+
+        # ── List item grouping ─────────────────────────────────────────────
+        if kind == "text" and blk.get("list_item"):
+            list_type = blk["list_item"]["type"]
+            tag       = "ul" if list_type == "bullet" else "ol"
+            items: list[str] = []
+
+            while i < len(blocks):
+                b = blocks[i]
+                if b.get("kind") != "text" or not b.get("list_item"):
+                    break
+                content = " ".join(
+                    _render_line_content(ln)
+                    for ln in b.get("lines", [])
+                    if ln.get("spans")
+                ).strip()
+                if content:
+                    indent = b["list_item"].get("level", 0)
+                    style  = f' style="margin-left:{indent * 1.2:.1f}em"' if indent else ""
+                    items.append(f"<li{style}>{content}</li>")
+                i += 1
+
+            if items:
+                html.append(f'<{tag}>{"".join(items)}</{tag}>')
+            last_text_had_nearby_image = False
+            continue
+
+        i += 1
 
         if kind == "image":
             img_data = blk.get("data")
