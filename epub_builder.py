@@ -525,7 +525,7 @@ images: dict[str, bytes]                       = {}
 chapter_files: list[tuple[str, str, str]]      = []
 
     # ── Generated title page (always first) ───────────────────────────────
-    subtitle_html = (
+   subtitle_html = (
         f'<p style="font-size:1.5em; margin-top:0.8em; text-indent:0; font-style:italic;">'
         f'{_sanitize(subtitle)}</p>'
     ) if subtitle and subtitle.strip() else ""
