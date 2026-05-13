@@ -57,6 +57,7 @@ async def convert_pdf(
     pdf: UploadFile = File(...),       # field name kept as "pdf" for backward compatibility
     title:  str = Form(...),
     author: str = Form(...),
+    subtitle: str = Form(default=""),
 ):
     # ── File type validation ───────────────────────────────────────────────
     if not pdf.filename:
@@ -90,7 +91,7 @@ async def convert_pdf(
     set_job(job_id, {"status": JobStatus.QUEUED, "title": title, "author": author})
 
     # Pass the file extension so the worker knows which pipeline to run
-    convert_pdf_task.delay(job_id, file_b64, title, author, ext)
+    convert_pdf_task.delay(job_id, file_b64, title, author, ext, subtitle)
 
     return JSONResponse(
         {"job_id": job_id, "status": JobStatus.QUEUED},
