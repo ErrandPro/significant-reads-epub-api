@@ -537,7 +537,7 @@ def build_epub(
     </p>
     {subtitle_html}
   </div>
-  <div style="text-align:center; position:absolute; bottom:8%; width:90%; left:5%;">
+  <div style="text-align:center; padding-top: 40%;">
     <p style="font-size:1.3em; text-indent:0; margin:0;">
       {_sanitize(author)}
     </p>
