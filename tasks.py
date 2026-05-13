@@ -58,36 +58,30 @@ def _update(job_id: str, **kwargs):
     soft_time_limit=300,
     time_limit=360,
 )
-def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, ext: str = ".pdf", subtitle: str | None = None):
+def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, ext: str = ".pdf", subtitle: str | None = None, copyright: str = "", dedication: str = "", acknowledgements: str = "", foreword: str = ""):
     t0 = time.time()
     out_dir = f"/tmp/epub_out_{job_id}"
     os.makedirs(out_dir, exist_ok=True)
-
     in_path = f"/tmp/file_in_{job_id}{ext}"
     with open(in_path, "wb") as f:
         f.write(base64.b64decode(file_b64))
-
     try:
         if ext == ".pdf":
-            epub_path = _pipeline_pdf(job_id, in_path, title, author, subtitle, out_dir)
+            epub_path = _pipeline_pdf(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
         elif ext == ".docx":
-            epub_path = _pipeline_docx(job_id, in_path, title, author, subtitle, out_dir)
+            epub_path = _pipeline_docx(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
         elif ext == ".doc":
-            epub_path = _pipeline_doc(job_id, in_path, title, author, subtitle, out_dir)
+            epub_path = _pipeline_doc(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
         else:
             raise ValueError(f"Unsupported file type: {ext}")
-
         if not os.path.exists(epub_path):
             raise RuntimeError("EPUB file was not created.")
-
         with open(epub_path, "rb") as f:
             epub_bytes = f.read()
         store_epub(job_id, epub_bytes)
-
         elapsed = round(time.time() - t0, 1)
         _update(job_id, status=JobStatus.DONE, progress=100, elapsed_seconds=elapsed)
         logger.info(f"job_id={job_id} status=done elapsed={elapsed}s")
-
     except Exception as exc:
         logger.error(f"job_id={job_id} error={exc}", exc_info=True)
         _update(job_id, status=JobStatus.FAILED, error=str(exc))
@@ -104,55 +98,53 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
 
 
 # ── Pipelines ─────────────────────────────────────────────────────────────────
-
-def _pipeline_pdf(job_id: str, pdf_path: str, title: str, author: str, subtitle: str | None, out_dir: str) -> str:
+def _pipeline_pdf(job_id: str, pdf_path: str, title: str, author: str, subtitle: str | None, copyright: str, dedication: str, acknowledgements: str, foreword: str, out_dir: str) -> str:
     _update(job_id, status=JobStatus.EXTRACTING, progress=10)
     logger.info(f"job_id={job_id} stage=extract type=pdf")
-
     rich_chapters = _try_rich_extraction(pdf_path, job_id)
     text = _extract_text(pdf_path, job_id)
-
     _update(job_id, status=JobStatus.BUILDING, progress=60)
     logger.info(
         f"job_id={job_id} stage=build words={len(text.split())} "
         f"rich={'yes' if rich_chapters else 'no'}"
     )
-
     return build_epub(
         text, title, author, out_dir,
         pdf_path=pdf_path,
         rich_chapters=rich_chapters,
         subtitle=subtitle,
+        copyright=copyright,
+        dedication=dedication,
+        acknowledgements=acknowledgements,
+        foreword=foreword,
     )
 
-
-def _pipeline_docx(job_id: str, docx_path: str, title: str, author: str, subtitle: str | None, out_dir: str) -> str:
+def _pipeline_docx(job_id: str, docx_path: str, title: str, author: str, subtitle: str | None, copyright: str, dedication: str, acknowledgements: str, foreword: str, out_dir: str) -> str:
     _update(job_id, status=JobStatus.EXTRACTING, progress=10)
     logger.info(f"job_id={job_id} stage=extract type=docx")
-
     rich_chapters = _try_rich_extraction_docx(docx_path, job_id)
     text = _extract_text_docx(docx_path, job_id)
-
     _update(job_id, status=JobStatus.BUILDING, progress=60)
     logger.info(
         f"job_id={job_id} stage=build words={len(text.split())} "
         f"rich={'yes' if rich_chapters else 'no'}"
     )
-
     return build_epub(
         text, title, author, out_dir,
         docx_path=docx_path,
         rich_chapters=rich_chapters,
         subtitle=subtitle,
+        copyright=copyright,
+        dedication=dedication,
+        acknowledgements=acknowledgements,
+        foreword=foreword,
     )
 
-
-def _pipeline_doc(job_id: str, doc_path: str, title: str, author: str, subtitle: str | None, out_dir: str) -> str:
+def _pipeline_doc(job_id: str, doc_path: str, title: str, author: str, subtitle: str | None, copyright: str, dedication: str, acknowledgements: str, foreword: str, out_dir: str) -> str:
     _update(job_id, status=JobStatus.EXTRACTING, progress=5)
     logger.info(f"job_id={job_id} stage=doc_to_docx")
-
     docx_path = convert_doc_to_docx(doc_path)
-    return _pipeline_docx(job_id, docx_path, title, author, subtitle, out_dir)
+    return _pipeline_docx(job_id, docx_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
 
 
 # ── Extraction helpers — PDF ──────────────────────────────────────────────────
