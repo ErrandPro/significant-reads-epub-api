@@ -531,12 +531,14 @@ def build_epub(
     ) if subtitle and subtitle.strip() else ""
 
     title_page_html = f"""
-  <div style="text-align:center; margin-top: 30%;">
-    <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0;">
+  <div style="text-align:center; margin-top: 8%;">
+    <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0; margin-bottom:0.3em;">
       {_sanitize(title)}
     </p>
     {subtitle_html}
-    <p style="font-size:1.3em; margin-top:1.5em; text-indent:0;">
+  </div>
+  <div style="text-align:center; position:absolute; bottom:8%; width:90%; left:5%;">
+    <p style="font-size:1.3em; text-indent:0; margin:0;">
       {_sanitize(author)}
     </p>
   </div>
