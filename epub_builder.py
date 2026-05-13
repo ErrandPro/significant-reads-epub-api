@@ -521,8 +521,8 @@ def build_epub(
         cover_png = extract_cover_from_docx(docx_path)
 
     # ── Chapter rendering ──────────────────────────────────────────────────
-images: dict[str, bytes]                       = {}
-chapter_files: list[tuple[str, str, str]]      = []
+    images: dict[str, bytes]                       = {}
+    chapter_files: list[tuple[str, str, str]]      = []
 
     # ── Generated title page (always first) ───────────────────────────────
     subtitle_html = (
