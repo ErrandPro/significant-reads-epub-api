@@ -283,7 +283,10 @@ def extract_rich_chapters_from_docx(
         def _flush_lines() -> None:
             nonlocal cur_lines, cur_kind
             if cur_lines:
-                state["blocks"].append({"kind": cur_kind, "lines": cur_lines[:]})
+                blk = {"kind": cur_kind, "lines": cur_lines[:]}
+                if cur_lines[0].get("list_item"):
+                    blk["list_item"] = cur_lines[0]["list_item"]
+                state["blocks"].append(blk)
                 cur_lines = []
             cur_kind = "text"
 
@@ -446,7 +449,11 @@ def extract_rich_chapters_from_docx(
                     # paragraph boundaries become separate <p> tags in the EPUB
                     spans = _para_to_spans(para)
                     if spans:
-                        cur_lines.append({"spans": spans, "is_section": False})
+                        line_dict = {"spans": spans, "is_section": False}
+                        list_info = _para_list_info(para)
+                        if list_info:
+                            line_dict["list_item"] = list_info
+                        cur_lines.append(line_dict)
                         _flush_lines()
                 # ── Table ─────────────────────────────────────────────────
                 elif local == "tbl":
@@ -552,6 +559,35 @@ def _dedup_row(row: list[str]) -> list[str]:
     return out
 
 
+def _para_list_info(para) -> dict | None:
+    """
+    Return {"type": "bullet"|"ordered", "level": int} if this paragraph
+    is a list item, or None if it is not.
+    """
+    from docx.oxml.ns import qn
+
+    style_name = (para.style.name or "").lower().strip()
+
+    if "list bullet" in style_name:
+        m = re.search(r'(\d+)$', style_name)
+        level = (int(m.group(1)) - 1) if m else 0
+        return {"type": "bullet", "level": max(0, level)}
+
+    if "list number" in style_name:
+        m = re.search(r'(\d+)$', style_name)
+        level = (int(m.group(1)) - 1) if m else 0
+        return {"type": "ordered", "level": max(0, level)}
+
+    numPr = para._element.find(qn("w:numPr"))
+    if numPr is not None:
+        ilvl = numPr.find(qn("w:ilvl"))
+        level = int(ilvl.get(qn("w:val"), 0)) if ilvl is not None else 0
+        list_type = "ordered" if "number" in style_name else "bullet"
+        return {"type": list_type, "level": level}
+
+    return None
+
+    
 def _extract_inline_images(para) -> list[dict]:
     """
     Extract images from a paragraph's w:drawing elements — both inline
