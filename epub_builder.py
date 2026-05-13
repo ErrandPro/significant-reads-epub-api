@@ -651,8 +651,8 @@ def build_epub(
   </manifest>
   <spine toc="ncx">
     {'<itemref idref="cover-page"/>' if cover_png else ''}
-    <itemref idref="toc"/>
     {spine_items}
+    <itemref idref="toc"/>
   </spine>
 </package>"""
 
