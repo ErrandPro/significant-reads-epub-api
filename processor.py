@@ -177,25 +177,27 @@ def _is_toc_chapter(title: str, blocks: list[dict]) -> bool:
     if title_lower in toc_titles:
         return True
 
-    # Also catch short chapters whose body contains "table of contents"
-    # — these are the author's own TOC page extracted with a non-TOC title
+    # Extract all text from blocks by traversing the correct schema:
+    # block → lines → spans → text
+    def _block_text(blocks):
+        parts = []
+        for b in blocks:
+            for line in b.get("lines", []):
+                for span in line.get("spans", []):
+                    parts.append(span.get("text", ""))
+        return " ".join(parts).lower()
+
+    # Catch short chapters whose body contains "table of contents"
     if len(blocks) <= 5:
-        combined = " ".join(
-            b.get("text", "") for b in blocks
-        ).lower()
-        if "table of contents" in combined:
+        if "table of contents" in _block_text(blocks):
             return True
 
-    return False
-
-    # Scan block text for TOC line patterns: "Some Title ........ 12"
+    # Scan for TOC line patterns: "Some Title ........ 12"
     toc_pattern = re.compile(r"\.{3,}\s*\d+\s*$|\s{3,}\d+\s*$")
     toc_hits    = 0
     total_lines = 0
 
     for blk in blocks:
-        if blk.get("kind") != "text":
-            continue
         for ln in blk.get("lines", []):
             text = "".join(s.get("text", "") for s in ln.get("spans", []))
             if text.strip():
@@ -203,7 +205,6 @@ def _is_toc_chapter(title: str, blocks: list[dict]) -> bool:
                 if toc_pattern.search(text):
                     toc_hits += 1
 
-    # If more than 40% of lines look like TOC entries, skip this chapter
     if total_lines >= 4 and toc_hits / total_lines >= 0.40:
         return True
 
