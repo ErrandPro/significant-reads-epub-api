@@ -7,7 +7,12 @@ from processor import extract_chapters_from_text, extract_cover_image
 
 logger = logging.getLogger(__name__)
 
-SKIP_CHAPTERS = {"contents", "table of contents", "content"}
+SKIP_CHAPTERS = {
+    "contents", "table of contents", "content",
+    "copyright", "dedication",
+    "acknowledgements", "acknowledgement", "acknowledgments", "acknowledgment",
+    "foreword", "preface", "front matter", "title page",
+}
 
 # Chapter titles that should use the front-matter page style
 # (centered, spaced, no text-indent) rather than the regular chapter template
@@ -477,10 +482,13 @@ def build_epub(
     docx_path: str | None = None,
     rich_chapters: list[tuple[str, list[dict]]] | None = None,
     subtitle: str | None = None,
+    copyright: str = "",
+    dedication: str = "",
+    acknowledgements: str = "",
+    foreword: str = "",
 ) -> str:
     """
     Assemble an EPUB file from structured content.
-
     Parameters
     ----------
     text          : Plain-text fallback content (used when rich_chapters is None).
@@ -493,7 +501,11 @@ def build_epub(
                     extraction from Word files.
     rich_chapters : Pre-extracted rich chapters (list of (title, blocks)).
                     When supplied, overrides plain-text chapter detection.
-
+    subtitle      : Optional subtitle shown on title page.
+    copyright     : Optional copyright page text.
+    dedication    : Optional dedication page text.
+    acknowledgements : Optional acknowledgements page text.
+    foreword      : Optional foreword page text.
     Returns
     -------
     Absolute path to the generated .epub file.
@@ -501,9 +513,7 @@ def build_epub(
     safe_title = re.sub(r"[^\w\s-]", "", title).strip()
     safe_title = re.sub(r"\s+", "_", safe_title)
     output     = os.path.join(out_dir, f"{safe_title}.epub")
-
     use_rich = rich_chapters is not None and len(rich_chapters) > 0
-
     if use_rich:
         raw_chapters = rich_chapters
     else:
@@ -551,6 +561,20 @@ def build_epub(
 """
     title_page_xhtml = _front_matter_xhtml("", title_page_html)
     chapter_files.append(("chap_00.xhtml", _sanitize(title), title_page_xhtml))
+
+    # ── Optional front matter pages (in order) ────────────────────────────
+    def _add_front_matter_page(slug: str, heading: str, text: str) -> None:
+        if not text or not text.strip():
+            return
+        body = "\n".join(f"<p>{_sanitize(p.strip())}</p>" for p in text.strip().split("\n") if p.strip())
+        xhtml = _front_matter_xhtml(heading, body)
+        num = len(chapter_files) + 1
+        chapter_files.append((f"chap_{num:02d}.xhtml", heading, xhtml))
+
+    _add_front_matter_page("copyright",       "Copyright",       copyright)
+    _add_front_matter_page("dedication",      "Dedication",      dedication)
+    _add_front_matter_page("acknowledgements","Acknowledgements", acknowledgements)
+    _add_front_matter_page("foreword",        "Foreword",        foreword)
 
     for chap_title, chap_data in raw_chapters:
         if chap_title.strip().lower() in SKIP_CHAPTERS:
