@@ -524,7 +524,7 @@ def build_epub(
     images: dict[str, bytes]                       = {}
     chapter_files: list[tuple[str, str, str]]      = []
 
-    # ── Generated title page (always first) ───────────────────────────────
+# ── Generated title page (always first) ───────────────────────────────
     subtitle_html = (
         f'<p style="font-size:1.5em; margin-top:0.8em; text-indent:0; font-style:italic;">'
         f'{_sanitize(subtitle)}</p>'
@@ -557,6 +557,13 @@ def build_epub(
         else:
             body_html  = _render_text_chapter(chap_data)
 
+        if is_front:
+            xhtml = _front_matter_xhtml(safe_chap_title, body_html)
+        else:
+            xhtml = _chapter_xhtml(safe_chap_title, body_html)
+
+        chapter_files.append((fname, safe_chap_title, xhtml))
+        
     # ── OPF manifests ──────────────────────────────────────────────────────
     image_manifest = "\n    ".join(
         f'<item id="img-{fn.replace(".", "-")}" href="images/{fn}" '
