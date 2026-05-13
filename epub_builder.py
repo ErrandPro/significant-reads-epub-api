@@ -522,7 +522,7 @@ def build_epub(
 
     # ── Chapter rendering ──────────────────────────────────────────────────
 images: dict[str, bytes]                       = {}
-    chapter_files: list[tuple[str, str, str]]      = []
+chapter_files: list[tuple[str, str, str]]      = []
 
     # ── Generated title page (always first) ───────────────────────────────
     subtitle_html = (
