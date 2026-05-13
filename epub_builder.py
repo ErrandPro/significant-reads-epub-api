@@ -612,12 +612,12 @@ def build_epub(
     front_spine_items = "\n    ".join(
         f'<itemref idref="chap{i+1}"/>'
         for i, (_, ct, __) in enumerate(chapter_files)
-        if ct.lower().strip() in FRONT_MATTER_TITLES
+        if i == 0 or ct.lower().strip() in FRONT_MATTER_TITLES
     )
     main_spine_items = "\n    ".join(
         f'<itemref idref="chap{i+1}"/>'
         for i, (_, ct, __) in enumerate(chapter_files)
-        if ct.lower().strip() not in FRONT_MATTER_TITLES
+        if i != 0 and ct.lower().strip() not in FRONT_MATTER_TITLES
     )
 
     toc_nav_points = "\n    ".join(
