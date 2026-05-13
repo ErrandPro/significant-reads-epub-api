@@ -177,6 +177,17 @@ def _is_toc_chapter(title: str, blocks: list[dict]) -> bool:
     if title_lower in toc_titles:
         return True
 
+    # Also catch short chapters whose body contains "table of contents"
+    # — these are the author's own TOC page extracted with a non-TOC title
+    if len(blocks) <= 5:
+        combined = " ".join(
+            b.get("text", "") for b in blocks
+        ).lower()
+        if "table of contents" in combined:
+            return True
+
+    return False
+
     # Scan block text for TOC line patterns: "Some Title ........ 12"
     toc_pattern = re.compile(r"\.{3,}\s*\d+\s*$|\s{3,}\d+\s*$")
     toc_hits    = 0
