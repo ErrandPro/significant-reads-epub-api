@@ -568,8 +568,7 @@ def _extract_inline_images(para) -> list[dict]:
     for drawing in para._element.findall(f".//{{{_NS_W}}}drawing"):
         # BUG 2 FIX: removed the wp:inline-only guard that was here.
         # Both wp:inline and wp:anchor drawings may contain a:blip references.
-
-      for blip in drawing.findall(f".//{{{_NS_A}}}blip"):
+        for blip in drawing.findall(f".//{{{_NS_A}}}blip"):
             r_embed = blip.get(f"{{{_NS_R}}}embed")
             if not r_embed:
                 continue
