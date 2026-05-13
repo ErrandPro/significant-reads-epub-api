@@ -271,9 +271,8 @@ def _render_rich_blocks(
     images: dict[str, bytes],
     img_prefix: str,
 ) -> str:
-    html: list[str]            = []
-    img_idx                    = 0
-    last_text_had_nearby_image = False
+    html: list[str] = []
+    img_idx         = 0
 
     for blk in blocks:
         kind = blk.get("kind")
@@ -286,27 +285,24 @@ def _render_rich_blocks(
                 )
                 continue
 
+            ext = blk.get("ext", "png")
+            if ext == "svg":
+                logger.warning(
+                    f"[{img_prefix}] SVG image skipped — not supported via <img> in EPUB"
+                )
+                continue
+
             img_idx += 1
-            ext   = blk.get("ext", "png")
             fname = f"{img_prefix}_{img_idx:03d}.{ext}"
             images[fname] = img_data
             logger.info(
                 f"[{img_prefix}] image written: {fname} ({len(img_data)} bytes)"
             )
-
-            if last_text_had_nearby_image:
-                html.append(
-                    f'<figure class="float-image">'
-                    f'<img src="images/{fname}" alt=""/>'
-                    f'</figure>'
-                )
-                last_text_had_nearby_image = False
-            else:
-                html.append(
-                    f'<div class="img-wrap">'
-                    f'<img src="images/{fname}" alt=""/>'
-                    f'</div>'
-                )
+            html.append(
+                f'<div class="img-wrap">'
+                f'<img src="images/{fname}" alt=""/>'
+                f'</div>'
+            )
 
         elif kind == "table":
             rows = blk.get("rows", [])
@@ -318,22 +314,22 @@ def _render_rich_blocks(
                 f"[{img_prefix}] table written: {len(rows)} rows x "
                 f"{len(rows[0]) if rows else 0} cols"
             )
+
+            first_row_is_header = _row_looks_like_header(rows[0])
             row_html: list[str] = []
             for ri, row in enumerate(rows):
-                tag   = "th" if ri == 0 else "td"
+                tag   = "th" if (ri == 0 and first_row_is_header) else "td"
                 cells = "".join(
                     f"<{tag}>{_sanitize(cell)}</{tag}>" for cell in row
                 )
                 row_html.append(f"<tr>{cells}</tr>")
 
             html.append(f'<table>{"".join(row_html)}</table>')
-            last_text_had_nearby_image = False
 
         elif kind == "sidebar":
             rendered = _render_sidebar_block(blk)
             if rendered:
                 html.append(rendered)
-            last_text_had_nearby_image = blk.get("nearby_image", False)
 
         elif kind == "text":
             lines = blk.get("lines", [])
@@ -342,13 +338,27 @@ def _render_rich_blocks(
             block_html: list[str] = []
             _render_text_lines(lines, block_html)
             html.extend(block_html)
-            last_text_had_nearby_image = blk.get("nearby_image", False)
 
     logger.info(
         f"[{img_prefix}] render complete — "
         f"{img_idx} image(s), {len(html)} html block(s)"
     )
     return "\n".join(html)
+
+
+def _row_looks_like_header(row: list[str]) -> bool:
+    """Return True if the first table row looks like a header row."""
+    if not row:
+        return False
+    return all(
+        len(cell) < 40 and (
+            cell.istitle()
+            or cell.isupper()
+            or not any(c.isdigit() for c in cell)
+        )
+        for cell in row
+        if cell.strip()
+    )
 
 
 # ── Plain-text rendering ──────────────────────────────────────────────────────
