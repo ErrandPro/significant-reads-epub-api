@@ -531,17 +531,23 @@ def build_epub(
     ) if subtitle and subtitle.strip() else ""
 
     title_page_html = f"""
-  <div style="text-align:center; margin-top: 8%;">
-    <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0; margin-bottom:0.3em;">
-      {_sanitize(title)}
-    </p>
-    {subtitle_html}
-  </div>
-  <div style="text-align:center; padding-top: 40%;">
-    <p style="font-size:1.3em; text-indent:0; margin:0;">
-      {_sanitize(author)}
-    </p>
-  </div>
+  <table style="width:100%; height:90vh; border:none; border-collapse:collapse;">
+    <tr style="vertical-align:top;">
+      <td style="text-align:center; padding-top:8%;">
+        <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0; margin-bottom:0.3em;">
+          {_sanitize(title)}
+        </p>
+        {subtitle_html}
+      </td>
+    </tr>
+    <tr style="vertical-align:bottom;">
+      <td style="text-align:center; padding-bottom:8%;">
+        <p style="font-size:1.3em; text-indent:0; margin:0;">
+          {_sanitize(author)}
+        </p>
+      </td>
+    </tr>
+  </table>
 """
     title_page_xhtml = _front_matter_xhtml("", title_page_html)
     chapter_files.append(("chap_00.xhtml", _sanitize(title), title_page_xhtml))
