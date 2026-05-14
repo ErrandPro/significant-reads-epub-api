@@ -86,11 +86,17 @@ def convert_doc_to_docx(doc_path: str) -> str:
     out_dir = tempfile.mkdtemp(prefix="doc2docx_")
 
     result = subprocess.run(
-        [soffice, "--headless", "--convert-to", "docx",
-         "--outdir", out_dir, doc_path],
-        capture_output=True,
-        timeout=120,
-    )
+            [soffice,
+             "--headless",
+             "--norestore",
+             "--nofirststartwizard",
+             f"-env:UserInstallation=file://{tmp}/lo_profile",
+             "--convert-to", "docx",
+             "--outdir", tmp,
+             doc_path],
+            capture_output=True,
+            timeout=120,
+        )
 
     if result.returncode != 0:
         raise RuntimeError(
@@ -119,11 +125,24 @@ def convert_pdf_to_docx(pdf_path: str) -> str:
     try:
         soffice = _find_soffice()
         result = subprocess.run(
-            [soffice, "--headless", "--convert-to", "docx",
-             "--outdir", tmp, pdf_path],
+            [soffice,
+             "--headless",
+             "--norestore",
+             "--nofirststartwizard",
+             f"-env:UserInstallation=file://{tmp}/lo_profile",
+             "--convert-to", "docx",
+             "--outdir", tmp,
+             pdf_path],
             capture_output=True,
             timeout=120,
         )
+        if result.returncode != 0 or not any(
+            f.endswith(".docx") for f in os.listdir(tmp)
+        ):
+            raise RuntimeError(
+                f"LibreOffice PDF→DOCX failed (exit {result.returncode}): "
+                f"{result.stderr.decode()}"
+            )
         if result.returncode != 0:
             raise RuntimeError(
                 f"LibreOffice PDF→DOCX failed: {result.stderr.decode()}"
