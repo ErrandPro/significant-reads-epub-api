@@ -118,44 +118,20 @@ def convert_doc_to_docx(doc_path: str) -> str:
 
 
 def convert_pdf_to_docx(pdf_path: str) -> str:
-    """Convert a PDF to DOCX using LibreOffice, return the .docx path."""
-    import subprocess, tempfile, shutil
+    """Convert a PDF to DOCX using pdf2docx, return the .docx path."""
+    from pdf2docx import Converter
 
-    tmp = tempfile.mkdtemp(prefix="pdf2docx_")
+    dest = pdf_path.replace(".pdf", "_converted.docx")
+    cv = Converter(pdf_path)
     try:
-        soffice = _find_soffice()
-        result = subprocess.run(
-            [soffice,
-             "--headless",
-             "--norestore",
-             "--nofirststartwizard",
-             f"-env:UserInstallation=file://{tmp}/lo_profile",
-             "--convert-to", "docx",
-             "--outdir", tmp,
-             pdf_path],
-            capture_output=True,
-            timeout=120,
-        )
-        if result.returncode != 0 or not any(
-            f.endswith(".docx") for f in os.listdir(tmp)
-        ):
-            raise RuntimeError(
-                f"LibreOffice PDF→DOCX failed (exit {result.returncode}): "
-                f"{result.stderr.decode()}"
-            )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"LibreOffice PDF→DOCX failed: {result.stderr.decode()}"
-            )
-        basename = os.path.splitext(os.path.basename(pdf_path))[0]
-        docx_out = os.path.join(tmp, f"{basename}.docx")
-        if not os.path.exists(docx_out):
-            raise RuntimeError("LibreOffice produced no DOCX output.")
-        dest = pdf_path.replace(".pdf", "_converted.docx")
-        shutil.move(docx_out, dest)
-        return dest
+        cv.convert(dest, start=0, end=None)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        cv.close()
+
+    if not os.path.exists(dest):
+        raise RuntimeError("pdf2docx produced no DOCX output.")
+
+    return dest
 
 
 def _find_soffice() -> str:
