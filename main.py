@@ -84,7 +84,7 @@ async def convert_pdf(
         )
 
     # ── Queue the job ──────────────────────────────────────────────────────
-    job_id  = str(uuid.uuid4())
+    job_id   = str(uuid.uuid4())
     file_b64 = base64.b64encode(raw).decode("utf-8")
 
     logger.info(
@@ -92,7 +92,12 @@ async def convert_pdf(
         f"ext={ext} size={len(raw)}"
     )
 
-    set_job(job_id, {"status": JobStatus.QUEUED, "title": title, "author": author})
+    set_job(job_id, {
+        "status": JobStatus.QUEUED,
+        "title": title,
+        "author": author,
+        "output_ext": ".docx" if ext == ".pdf" else ".epub",
+    })
 
     # Pass the file extension so the worker knows which pipeline to run
     convert_pdf_task.delay(job_id, file_b64, title, author, ext, subtitle, copyright, dedication, acknowledgements, foreword)
