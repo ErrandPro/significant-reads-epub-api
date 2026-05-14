@@ -126,11 +126,19 @@ async def download_epub(job_id: str):
         raise HTTPException(status_code=410, detail="EPUB expired or missing.")
 
     safe_title = job.get("title", "book").replace(" ", "_")
+    output_ext = job.get("output_ext", ".epub")
 
     delete_epub(job_id)
 
+    if output_ext == ".docx":
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename   = f"{safe_title}.docx"
+    else:
+        media_type = "application/epub+zip"
+        filename   = f"{safe_title}.epub"
+
     return Response(
         content=epub_bytes,
-        media_type="application/epub+zip",
-        headers={"Content-Disposition": f'attachment; filename="{safe_title}.epub"'},
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
