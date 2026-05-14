@@ -111,6 +111,34 @@ def convert_doc_to_docx(doc_path: str) -> str:
     return out_path
 
 
+def convert_pdf_to_docx(pdf_path: str) -> str:
+    """Convert a PDF to DOCX using LibreOffice, return the .docx path."""
+    import subprocess, tempfile, shutil
+
+    tmp = tempfile.mkdtemp(prefix="pdf2docx_")
+    try:
+        soffice = _find_soffice()
+        result = subprocess.run(
+            [soffice, "--headless", "--convert-to", "docx",
+             "--outdir", tmp, pdf_path],
+            capture_output=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"LibreOffice PDF→DOCX failed: {result.stderr.decode()}"
+            )
+        basename = os.path.splitext(os.path.basename(pdf_path))[0]
+        docx_out = os.path.join(tmp, f"{basename}.docx")
+        if not os.path.exists(docx_out):
+            raise RuntimeError("LibreOffice produced no DOCX output.")
+        dest = pdf_path.replace(".pdf", "_converted.docx")
+        shutil.move(docx_out, dest)
+        return dest
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _find_soffice() -> str:
     """Locate the LibreOffice binary across common install paths."""
     candidates = [
