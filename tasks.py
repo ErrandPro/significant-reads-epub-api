@@ -11,6 +11,7 @@ from processor import (
     extract_rich_chapters_from_docx,
     extract_text_from_docx,
     convert_doc_to_docx,
+    convert_pdf_to_docx,
 )
 from epub_builder import build_epub
 
@@ -100,24 +101,11 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
 # ── Pipelines ─────────────────────────────────────────────────────────────────
 def _pipeline_pdf(job_id: str, pdf_path: str, title: str, author: str, subtitle: str | None, copyright: str, dedication: str, acknowledgements: str, foreword: str, out_dir: str) -> str:
     _update(job_id, status=JobStatus.EXTRACTING, progress=10)
-    logger.info(f"job_id={job_id} stage=extract type=pdf")
-    rich_chapters = _try_rich_extraction(pdf_path, job_id)
-    text = _extract_text(pdf_path, job_id)
-    _update(job_id, status=JobStatus.BUILDING, progress=60)
-    logger.info(
-        f"job_id={job_id} stage=build words={len(text.split())} "
-        f"rich={'yes' if rich_chapters else 'no'}"
-    )
-    return build_epub(
-        text, title, author, out_dir,
-        pdf_path=pdf_path,
-        rich_chapters=rich_chapters,
-        subtitle=subtitle,
-        copyright=copyright,
-        dedication=dedication,
-        acknowledgements=acknowledgements,
-        foreword=foreword,
-    )
+    logger.info(f"job_id={job_id} stage=pdf_to_docx")
+    docx_path = convert_pdf_to_docx(pdf_path)
+    _update(job_id, status=JobStatus.BUILDING, progress=80, output_ext=".docx")
+    logger.info(f"job_id={job_id} stage=done type=docx")
+    return docx_path
 
 def _pipeline_docx(job_id: str, docx_path: str, title: str, author: str, subtitle: str | None, copyright: str, dedication: str, acknowledgements: str, foreword: str, out_dir: str) -> str:
     _update(job_id, status=JobStatus.EXTRACTING, progress=10)
