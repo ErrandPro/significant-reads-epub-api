@@ -713,7 +713,7 @@ def build_epub(
         f'<itemref idref="chap{i+1}"/>'
         for i, (_, ct, __) in enumerate(chapter_files)
         if i != 0 and ct.lower().strip() not in FRONT_MATTER_TITLES
-   
+    )
     toc_nav_points = "\n    ".join(
         f'<navPoint id="np{i+1}" playOrder="{i+1}">'
         f'<navLabel><text>{ct}</text></navLabel>'
