@@ -748,7 +748,7 @@ def build_epub(
         for i, (fn, ct, _) in enumerate(chapter_files)
         if ct.strip()
     )
-   toc_links = "\n".join(
+    toc_links = "\n".join(
         f'<li><a href="{fn}">{ct}</a></li>'
         for fn, ct, _ in chapter_files
         if ct.strip()
