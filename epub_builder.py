@@ -134,6 +134,65 @@ _FRONT_MATTER_CSS = """
 """
 
 
+_TITLE_PAGE_CSS = """
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
+        width: 100%; height: 100%;
+        margin: 0; padding: 0;
+    }
+    body {
+        font-family: Arial, sans-serif;
+        color: #000;
+    }
+    .title-page {
+        display: table;
+        width: 100%; height: 100%;
+        border-collapse: collapse;
+    }
+    .title-block {
+        display: table-row;
+        height: 85%;
+        vertical-align: top;
+    }
+    .author-block {
+        display: table-row;
+        height: 15%;
+        vertical-align: bottom;
+    }
+    .title-cell {
+        display: table-cell;
+        text-align: center;
+        vertical-align: top;
+        padding-top: 18%;
+        padding-left: 14pt;
+        padding-right: 14pt;
+    }
+    .author-cell {
+        display: table-cell;
+        text-align: center;
+        vertical-align: bottom;
+        padding-bottom: 10%;
+        padding-left: 14pt;
+        padding-right: 14pt;
+    }
+    .book-title {
+        font-size: 2.2em;
+        font-weight: bold;
+        line-height: 1.3;
+        margin: 0 0 0.3em 0;
+    }
+    .book-subtitle {
+        font-size: 1.3em;
+        font-style: italic;
+        margin: 0.5em 0 0 0;
+    }
+    .book-author {
+        font-size: 1.3em;
+        margin: 0;
+    }
+"""
+
+
 def _chapter_xhtml(chapter_title: str, body_html: str) -> str:
     safe_title = _sanitize(chapter_title)
     # Only emit <h1> when there is an actual title — an empty <h1></h1>
@@ -176,6 +235,20 @@ def _front_matter_xhtml(chapter_title: str, body_html: str) -> str:
 </html>"""
 
 
+def _title_page_xhtml(body_html: str) -> str:
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title></title>
+  <style><![CDATA[{_TITLE_PAGE_CSS}]]></style>
+</head>
+<body>
+{body_html}
+</body>
+</html>"""
+    
+    
 def _is_front_matter_chapter(title: str) -> bool:
     """Return True if this chapter title belongs to front matter."""
     return title.strip().lower() in _FRONT_MATTER_TITLES
@@ -588,32 +661,28 @@ def build_epub(
     chapter_files: list[tuple[str, str, str]]      = []
 
 # ── Generated title page (always first) ───────────────────────────────
-    subtitle_html = (
-        f'<p style="font-size:1.5em; margin-top:0.8em; text-indent:0; font-style:italic;">'
-        f'{_sanitize(subtitle)}</p>'
-    ) if subtitle and subtitle.strip() else ""
+    subtitle_tag = (
+        f'<p class="book-subtitle">{_sanitize(subtitle)}</p>'
+        if subtitle and subtitle.strip() else ""
+    )
 
     title_page_html = f"""
-  <table style="width:100%; height:600pt; border:none; border-collapse:collapse;">
-    <tr style="vertical-align:top;">
-      <td style="text-align:center; padding-top:8%;">
-        <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0; margin-bottom:0.3em;">
-          {_sanitize(title)}
-        </p>
-        {subtitle_html}
-      </td>
-    </tr>
-    <tr style="vertical-align:bottom;">
-      <td style="text-align:center; padding-bottom:8%;">
-        <p style="font-size:1.3em; text-indent:0; margin:0;">
-          {_sanitize(author)}
-        </p>
-      </td>
-    </tr>
-  </table>
+<div class="title-page">
+  <div class="title-block">
+    <div class="title-cell">
+      <p class="book-title">{_sanitize(title)}</p>
+      {subtitle_tag}
+    </div>
+  </div>
+  <div class="author-block">
+    <div class="author-cell">
+      <p class="book-author">{_sanitize(author)}</p>
+    </div>
+  </div>
+</div>
 """
-    title_page_xhtml = _front_matter_xhtml("", title_page_html)
-    chapter_files.append(("chap_00.xhtml", _sanitize(title), title_page_xhtml))
+    title_page_xhtml = _title_page_xhtml(title_page_html)
+    chapter_files.append(("chap_00.xhtml", "", title_page_xhtml))
 
     # ── Optional front matter pages (in order) ────────────────────────────
     def _add_front_matter_page(slug: str, heading: str, text: str) -> None:
@@ -672,15 +741,17 @@ def build_epub(
         for i, (_, ct, __) in enumerate(chapter_files)
         if i != 0 and ct.lower().strip() not in FRONT_MATTER_TITLES
     )
-
     toc_nav_points = "\n    ".join(
         f'<navPoint id="np{i+1}" playOrder="{i+1}">'
         f'<navLabel><text>{ct}</text></navLabel>'
         f'<content src="{fn}"/></navPoint>'
         for i, (fn, ct, _) in enumerate(chapter_files)
+        if ct.strip()
     )
-    toc_links = "\n".join(
-        f'<li><a href="{fn}">{ct}</a></li>' for fn, ct, _ in chapter_files
+   toc_links = "\n".join(
+        f'<li><a href="{fn}">{ct}</a></li>'
+        for fn, ct, _ in chapter_files
+        if ct.strip()
     )
     cover_manifest = ""
     cover_meta     = ""
