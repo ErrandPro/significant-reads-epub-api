@@ -642,13 +642,17 @@ def build_epub(
     )
 
     title_page_html = f"""
-<div class="title-section">
-  <p class="book-title">{_sanitize(title)}</p>
-  {subtitle_tag}
-</div>
-<div class="author-section">
-  <p class="book-author">{_sanitize(author)}</p>
-</div>
+  <div style="margin-top:15%; text-align:center;">
+    <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0; margin-bottom:0.4em;">
+      {_sanitize(title)}
+    </p>
+    {subtitle_html}
+  </div>
+  <div style="margin-top:40%; text-align:center;">
+    <p style="font-size:1.3em; text-indent:0; margin:0;">
+      {_sanitize(author)}
+    </p>
+  </div>
 """
     title_page_xhtml = _title_page_xhtml(title_page_html)
     chapter_files.append(("chap_00.xhtml", "", title_page_xhtml))
@@ -709,18 +713,18 @@ def build_epub(
         f'<itemref idref="chap{i+1}"/>'
         for i, (_, ct, __) in enumerate(chapter_files)
         if i != 0 and ct.lower().strip() not in FRONT_MATTER_TITLES
-    )
+   
     toc_nav_points = "\n    ".join(
         f'<navPoint id="np{i+1}" playOrder="{i+1}">'
         f'<navLabel><text>{ct}</text></navLabel>'
         f'<content src="{fn}"/></navPoint>'
         for i, (fn, ct, _) in enumerate(chapter_files)
-        if ct.strip()
+        if i != 0
     )
     toc_links = "\n".join(
         f'<li><a href="{fn}">{ct}</a></li>'
-        for fn, ct, _ in chapter_files
-        if ct.strip()
+        for i, (fn, ct, _) in enumerate(chapter_files)
+        if i != 0
     )
     cover_manifest = ""
     cover_meta     = ""
