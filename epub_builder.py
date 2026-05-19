@@ -136,44 +136,23 @@ _FRONT_MATTER_CSS = """
 
 _TITLE_PAGE_CSS = """
     *, *::before, *::after { box-sizing: border-box; }
-    html, body {
-        width: 100%; height: 100%;
-        margin: 0; padding: 0;
-    }
+    html { height: 100%; margin: 0; padding: 0; }
     body {
+        height: 100%;
+        margin: 0; padding: 0;
         font-family: Arial, sans-serif;
         color: #000;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
     }
-    .title-page {
-        display: table;
-        width: 100%; height: 100%;
-        border-collapse: collapse;
-    }
-    .title-block {
-        display: table-row;
-        height: 85%;
-        vertical-align: top;
-    }
-    .author-block {
-        display: table-row;
-        height: 15%;
-        vertical-align: bottom;
-    }
-    .title-cell {
-        display: table-cell;
+    .title-section {
         text-align: center;
-        vertical-align: top;
-        padding-top: 18%;
-        padding-left: 14pt;
-        padding-right: 14pt;
+        padding: 20% 14pt 0 14pt;
     }
-    .author-cell {
-        display: table-cell;
+    .author-section {
         text-align: center;
-        vertical-align: bottom;
-        padding-bottom: 10%;
-        padding-left: 14pt;
-        padding-right: 14pt;
+        padding: 0 14pt 12% 14pt;
     }
     .book-title {
         font-size: 2.2em;
@@ -234,19 +213,19 @@ def _front_matter_xhtml(chapter_title: str, body_html: str) -> str:
 </body>
 </html>"""
 
-
-def _title_page_xhtml(body_html: str) -> str:
-    return f"""<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-  <title></title>
-  <style><![CDATA[{_TITLE_PAGE_CSS}]]></style>
-</head>
-<body>
-{body_html}
-</body>
-</html>"""
+    subtitle_tag = (
+        f'<p class="book-subtitle">{_sanitize(subtitle)}</p>'
+        if subtitle and subtitle.strip() else ""
+    )
+    title_page_html = f"""
+<div class="title-section">
+  <p class="book-title">{_sanitize(title)}</p>
+  {subtitle_tag}
+</div>
+<div class="author-section">
+  <p class="book-author">{_sanitize(author)}</p>
+</div>
+"""
     
     
 def _is_front_matter_chapter(title: str) -> bool:
