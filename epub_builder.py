@@ -640,6 +640,7 @@ def build_epub(
         f'<p class="book-subtitle">{_sanitize(subtitle)}</p>'
         if subtitle and subtitle.strip() else ""
     )
+    subtitle_html = f'<p style="font-size:1.3em; font-style:italic; text-indent:0; margin-top:0.2em;">{_sanitize(subtitle)}</p>' if subtitle else ""
 
     title_page_html = f"""
   <div style="margin-top:15%; text-align:center;">
