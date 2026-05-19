@@ -174,9 +174,6 @@ _TITLE_PAGE_CSS = """
 
 def _chapter_xhtml(chapter_title: str, body_html: str) -> str:
     safe_title = _sanitize(chapter_title)
-    # Only emit <h1> when there is an actual title — an empty <h1></h1>
-    # collapses the spine item to zero height in continuous scroll mode,
-    # making the chapter invisible when the user switches to that view.
     h1_tag = f"  <h1>{safe_title}</h1>\n" if safe_title.strip() else ""
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -199,7 +196,6 @@ def _front_matter_xhtml(chapter_title: str, body_html: str) -> str:
     pages render cleanly instead of as a wall of text.
     """
     safe_title = _sanitize(chapter_title)
-    # Same empty-title guard as _chapter_xhtml — no <h1> when title is blank.
     h1_tag = f"  <h1>{safe_title}</h1>\n" if safe_title.strip() else ""
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -213,21 +209,21 @@ def _front_matter_xhtml(chapter_title: str, body_html: str) -> str:
 </body>
 </html>"""
 
-    subtitle_tag = (
-        f'<p class="book-subtitle">{_sanitize(subtitle)}</p>'
-        if subtitle and subtitle.strip() else ""
-    )
-    title_page_html = f"""
-<div class="title-section">
-  <p class="book-title">{_sanitize(title)}</p>
-  {subtitle_tag}
-</div>
-<div class="author-section">
-  <p class="book-author">{_sanitize(author)}</p>
-</div>
-"""
-    
-    
+
+def _title_page_xhtml(body_html: str) -> str:
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title></title>
+  <style><![CDATA[{_TITLE_PAGE_CSS}]]></style>
+</head>
+<body>
+{body_html}
+</body>
+</html>"""
+
+
 def _is_front_matter_chapter(title: str) -> bool:
     """Return True if this chapter title belongs to front matter."""
     return title.strip().lower() in _FRONT_MATTER_TITLES
@@ -325,7 +321,7 @@ def _render_sidebar_block(blk: dict) -> str:
 def _render_line_content(line: dict) -> str:
     """Render a single line's spans as inline HTML (no wrapping <p> tag)."""
     return _render_spans(line.get("spans", [])).strip()
-    
+
 
 def _render_rich_blocks(
     blocks: list[dict],
@@ -639,25 +635,19 @@ def build_epub(
     images: dict[str, bytes]                       = {}
     chapter_files: list[tuple[str, str, str]]      = []
 
-# ── Generated title page (always first) ───────────────────────────────
+    # ── Generated title page (always first) ───────────────────────────────
     subtitle_tag = (
         f'<p class="book-subtitle">{_sanitize(subtitle)}</p>'
         if subtitle and subtitle.strip() else ""
     )
 
     title_page_html = f"""
-<div class="title-page">
-  <div class="title-block">
-    <div class="title-cell">
-      <p class="book-title">{_sanitize(title)}</p>
-      {subtitle_tag}
-    </div>
-  </div>
-  <div class="author-block">
-    <div class="author-cell">
-      <p class="book-author">{_sanitize(author)}</p>
-    </div>
-  </div>
+<div class="title-section">
+  <p class="book-title">{_sanitize(title)}</p>
+  {subtitle_tag}
+</div>
+<div class="author-section">
+  <p class="book-author">{_sanitize(author)}</p>
 </div>
 """
     title_page_xhtml = _title_page_xhtml(title_page_html)
@@ -672,10 +662,10 @@ def build_epub(
         num = len(chapter_files) + 1
         chapter_files.append((f"chap_{num:02d}.xhtml", heading, xhtml))
 
-    _add_front_matter_page("copyright",       "Copyright",       copyright)
-    _add_front_matter_page("dedication",      "Dedication",      dedication)
-    _add_front_matter_page("acknowledgements","Acknowledgements", acknowledgements)
-    _add_front_matter_page("foreword",        "Foreword",        foreword)
+    _add_front_matter_page("copyright",        "Copyright",        copyright)
+    _add_front_matter_page("dedication",       "Dedication",       dedication)
+    _add_front_matter_page("acknowledgements", "Acknowledgements", acknowledgements)
+    _add_front_matter_page("foreword",         "Foreword",         foreword)
 
     for chap_title, chap_data in raw_chapters:
         if chap_title.strip().lower() in SKIP_CHAPTERS:
@@ -696,7 +686,7 @@ def build_epub(
             xhtml = _chapter_xhtml(safe_chap_title, body_html)
 
         chapter_files.append((fname, safe_chap_title, xhtml))
-        
+
     # ── OPF manifests ──────────────────────────────────────────────────────
     FRONT_MATTER_TITLES = {'copyright', 'dedication', 'acknowledgements', 'foreword', 'preface'}
 
@@ -770,9 +760,6 @@ def build_epub(
   <navMap>{toc_nav_points}</navMap>
 </ncx>"""
 
-    # FIX 3: toc.xhtml gets explicit width:100% and box-sizing so the renderer
-    # establishes a stable viewport before the first chapter loads, eliminating
-    # the reflow jump when transitioning from cover → toc → chapter.
     toc_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -794,9 +781,6 @@ def build_epub(
 </body>
 </html>"""
 
-    # FIX 3: cover.xhtml gets the same box-sizing + stable viewport treatment
-    # so the renderer doesn't thrash dimensions when the cover is the first
-    # page displayed before transitioning to toc/chapters.
     cover_xhtml = """<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
