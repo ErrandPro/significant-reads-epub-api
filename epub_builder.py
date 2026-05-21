@@ -637,16 +637,18 @@ def build_epub(
     subtitle_html = f'<p style="font-size:1.3em; font-style:italic; text-indent:0; margin-top:0.2em;">{_sanitize(subtitle)}</p>' if subtitle else ""
 
     title_page_html = f"""
-  <div style="margin-top:15%; text-align:center;">
-    <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0; margin-bottom:0.4em;">
-      {_sanitize(title)}
-    </p>
-    {subtitle_html}
-  </div>
-  <div style="margin-top:15%; text-align:center;">
-    <p style="font-size:1.3em; text-indent:0; margin:0;">
-      {_sanitize(author)}
-    </p>
+  <div style="display:flex; flex-direction:column; justify-content:space-between; min-height:80vh; text-align:center; padding:2em 1em;">
+    <div style="margin-top:2em;">
+      <p style="font-size:2.2em; font-weight:bold; line-height:1.3; text-indent:0; margin-bottom:0.4em;">
+        {_sanitize(title)}
+      </p>
+      {subtitle_html}
+    </div>
+    <div style="margin-bottom:2em;">
+      <p style="font-size:1.3em; text-indent:0; margin:0;">
+        {_sanitize(author)}
+      </p>
+    </div>
   </div>
 """
     title_page_xhtml = _title_page_xhtml(title_page_html)
