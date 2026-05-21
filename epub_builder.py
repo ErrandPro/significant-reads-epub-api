@@ -741,13 +741,14 @@ def build_epub(
     {main_spine_items}
   </spine>
 </package>"""
-ncx = f"""<?xml version="1.0" encoding="utf-8"?>
+    
+    ncx = f"""<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head><meta name="dtb:uid" content="id-{safe_title}"/></head>
   <docTitle><text>{_sanitize(title)}</text></docTitle>
   <navMap>{toc_nav_points}</navMap>
 </ncx>"""
-toc_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
+    toc_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -769,7 +770,7 @@ toc_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 </html>"""
 
     # ── Write EPUB zip ─────────────────────────────────────────────────────
-with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             "mimetype",
             "application/epub+zip",
