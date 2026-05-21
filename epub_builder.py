@@ -625,12 +625,6 @@ def build_epub(
     # ── Cover image ────────────────────────────────────────────────────────
     cover_png: bytes | None = None
 
-    if pdf_path:
-        cover_png = extract_cover_image(pdf_path)
-
-    if cover_png is None and docx_path:
-        cover_png = extract_cover_from_docx(docx_path)
-
     # ── Chapter rendering ──────────────────────────────────────────────────
     images: dict[str, bytes]                       = {}
     chapter_files: list[tuple[str, str, str]]      = []
@@ -727,14 +721,6 @@ def build_epub(
         for i, (fn, ct, _) in enumerate(chapter_files)
         if i != 0
     )
-    cover_manifest = ""
-    cover_meta     = ""
-    if cover_png:
-        cover_manifest = (
-            '<item id="cover-img" href="cover.png" media-type="image/png"/>\n    '
-            '<item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>'
-        )
-        cover_meta = '<meta name="cover" content="cover-img"/>'
     opf = f"""<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -742,30 +728,26 @@ def build_epub(
     <dc:creator>{_sanitize(author)}</dc:creator>
     <dc:language>en</dc:language>
     <dc:identifier id="bookid">id-{safe_title}</dc:identifier>
-    {cover_meta}
   </metadata>
   <manifest>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
     <item id="toc" href="toc.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-    {cover_manifest}
     {chapter_manifest}
     {image_manifest}
   </manifest>
   <spine toc="ncx">
-    {'<itemref idref="cover-page"/>' if cover_png else ''}
     {front_spine_items}
     <itemref idref="toc"/>
     {main_spine_items}
   </spine>
 </package>"""
-    ncx = f"""<?xml version="1.0" encoding="utf-8"?>
+ncx = f"""<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head><meta name="dtb:uid" content="id-{safe_title}"/></head>
   <docTitle><text>{_sanitize(title)}</text></docTitle>
   <navMap>{toc_nav_points}</navMap>
 </ncx>"""
-
-    toc_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
+toc_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -786,35 +768,6 @@ def build_epub(
 </body>
 </html>"""
 
-    cover_xhtml = """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-<title>Cover</title>
-<style>
-*, *::before, *::after { box-sizing: border-box; }
-html, body {
-    width: 100%;
-    min-height: 100%;
-    margin: 0;
-    padding: 0;
-    text-align: center;
-    background: #ffffff;
-}
-img {
-    display: block;
-    margin: 0 auto;
-    max-width: 100%;
-    max-height: 800pt;
-    height: auto;
-}
-</style>
-</head>
-<body>
-    <img src="cover.png" alt="Cover"/>
-</body>
-</html>"""
-
     # ── Write EPUB zip ─────────────────────────────────────────────────────
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
@@ -822,7 +775,6 @@ img {
             "application/epub+zip",
             compress_type=zipfile.ZIP_STORED,
         )
-
         zf.writestr(
             "META-INF/container.xml",
             """<?xml version="1.0"?>
@@ -833,21 +785,13 @@ img {
   </rootfiles>
 </container>""",
         )
-
         zf.writestr("OEBPS/content.opf", opf)
         zf.writestr("OEBPS/toc.ncx", ncx)
         zf.writestr("OEBPS/toc.xhtml", toc_xhtml)
-
-        if cover_png:
-            zf.writestr("OEBPS/cover.png", cover_png)
-            zf.writestr("OEBPS/cover.xhtml", cover_xhtml)
-
         for img_fname, img_bytes in images.items():
             zf.writestr(f"OEBPS/images/{img_fname}", img_bytes)
-
         for fname, _, xhtml in chapter_files:
             zf.writestr(f"OEBPS/{fname}", xhtml)
-
     return output
 
 
