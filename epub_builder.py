@@ -769,7 +769,7 @@ toc_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 </html>"""
 
     # ── Write EPUB zip ─────────────────────────────────────────────────────
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             "mimetype",
             "application/epub+zip",
