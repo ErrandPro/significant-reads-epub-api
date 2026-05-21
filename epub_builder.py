@@ -643,7 +643,7 @@ def build_epub(
     </p>
     {subtitle_html}
   </div>
-  <div style="margin-top:40%; text-align:center;">
+  <div style="margin-top:15%; text-align:center;">
     <p style="font-size:1.3em; text-indent:0; margin:0;">
       {_sanitize(author)}
     </p>
