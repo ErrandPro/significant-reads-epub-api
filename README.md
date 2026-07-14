@@ -1,3 +1,10 @@
+---
+title: significant-reads-epub-api
+emoji: 📚
+sdk: docker
+app_port: 7860
+---
+
 # PDF → EPUB Converter — V3
 
 ## What's new in V3
@@ -115,3 +122,4 @@ celery -A tasks worker --loglevel=info --concurrency=2
 Push to GitHub. Render will auto-deploy all three services defined in `render.yaml`.
 
 Set one secret in Render dashboard: `REDIS_URL` is auto-injected from the Redis service.
+```
