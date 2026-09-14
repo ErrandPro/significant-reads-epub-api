@@ -90,9 +90,9 @@ def convert_doc_to_docx(doc_path: str) -> str:
              "--headless",
              "--norestore",
              "--nofirststartwizard",
-             f"-env:UserInstallation=file://{tmp}/lo_profile",
+             f"-env:UserInstallation=file://{out_dir}/lo_profile",
              "--convert-to", "docx",
-             "--outdir", tmp,
+             "--outdir", out_dir,
              doc_path],
             capture_output=True,
             timeout=120,
@@ -114,6 +114,52 @@ def convert_doc_to_docx(doc_path: str) -> str:
         )
 
     logger.info(f".doc → .docx: {out_path}")
+    return out_path
+
+
+def convert_docx_to_pdf(docx_path: str) -> str:
+    """
+    Convert a .docx (or .doc) file to .pdf using LibreOffice headless.
+
+    Same pattern as convert_doc_to_docx — reuses the same soffice binary
+    already installed in the Docker image (libreoffice-writer).
+
+    Returns the path to the freshly-created .pdf file in a temp directory.
+    The caller is responsible for cleaning up the directory when done.
+    Raises RuntimeError if LibreOffice is not found or conversion fails.
+    """
+    soffice = _find_soffice()
+    out_dir = tempfile.mkdtemp(prefix="docx2pdf_")
+
+    result = subprocess.run(
+            [soffice,
+             "--headless",
+             "--norestore",
+             "--nofirststartwizard",
+             f"-env:UserInstallation=file://{out_dir}/lo_profile",
+             "--convert-to", "pdf",
+             "--outdir", out_dir,
+             docx_path],
+            capture_output=True,
+            timeout=120,
+        )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"LibreOffice conversion failed (exit {result.returncode}): "
+            f"{result.stderr.decode(errors='replace').strip()}"
+        )
+
+    basename = os.path.splitext(os.path.basename(docx_path))[0]
+    out_path = os.path.join(out_dir, f"{basename}.pdf")
+
+    if not os.path.exists(out_path):
+        raise RuntimeError(
+            f"LibreOffice ran but output not found at {out_path}. "
+            f"stdout: {result.stdout.decode(errors='replace').strip()}"
+        )
+
+    logger.info(f".docx → .pdf: {out_path}")
     return out_path
 
 
