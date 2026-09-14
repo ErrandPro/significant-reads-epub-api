@@ -12,6 +12,7 @@ from processor import (
     extract_text_from_docx,
     convert_doc_to_docx,
     convert_pdf_to_docx,
+    convert_docx_to_pdf,
 )
 from epub_builder import build_epub
 
@@ -59,7 +60,7 @@ def _update(job_id: str, **kwargs):
     soft_time_limit=300,
     time_limit=360,
 )
-def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, ext: str = ".pdf", subtitle: str | None = None, copyright: str = "", dedication: str = "", acknowledgements: str = "", foreword: str = ""):
+def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, ext: str = ".pdf", subtitle: str | None = None, copyright: str = "", dedication: str = "", acknowledgements: str = "", foreword: str = "", target: str = "epub"):
     t0 = time.time()
     out_dir = f"/tmp/epub_out_{job_id}"
     os.makedirs(out_dir, exist_ok=True)
@@ -69,6 +70,8 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
     try:
         if ext == ".pdf":
             epub_path = _pipeline_pdf(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
+        elif ext in (".docx", ".doc") and target == "pdf":
+            epub_path = _pipeline_docx_to_pdf(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
         elif ext == ".docx":
             epub_path = _pipeline_docx(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
         elif ext == ".doc":
@@ -134,7 +137,13 @@ def _pipeline_doc(job_id: str, doc_path: str, title: str, author: str, subtitle:
     docx_path = convert_doc_to_docx(doc_path)
     return _pipeline_docx(job_id, docx_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
 
-
+def _pipeline_docx_to_pdf(job_id: str, in_path: str, title: str, author: str, subtitle: str | None, copyright: str, dedication: str, acknowledgements: str, foreword: str, out_dir: str) -> str:
+    _update(job_id, status=JobStatus.BUILDING, progress=50, output_ext=".pdf")
+    logger.info(f"job_id={job_id} stage=docx_to_pdf")
+    pdf_path = convert_docx_to_pdf(in_path)
+    logger.info(f"job_id={job_id} stage=done type=pdf")
+    return pdf_path
+    
 # ── Extraction helpers — PDF ──────────────────────────────────────────────────
 
 def _try_rich_extraction(pdf_path: str, job_id: str) -> list[tuple[str, list[dict]]] | None:
