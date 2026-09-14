@@ -62,6 +62,7 @@ async def convert_pdf(
     dedication: str = Form(default=""),
     acknowledgements: str = Form(default=""),
     foreword: str = Form(default=""),
+    target: str | None = Form(default=None),
 ):
     # ── File type validation ───────────────────────────────────────────────
     if not pdf.filename:
@@ -75,6 +76,21 @@ async def convert_pdf(
             detail=f"Unsupported file type '{ext}'. Please upload a {ALLOWED_DISPLAY} file.",
         )
 
+        # ── Target validation ───────────────────────────────────────────────
+    if target is None:
+        target = "docx" if ext == ".pdf" else "epub"
+
+    VALID_TARGETS_BY_EXT = {
+        ".pdf":  {"docx"},            # PDF can only go to DOCX today
+        ".docx": {"epub", "pdf"},
+        ".doc":  {"epub", "pdf"},
+    }
+    if target not in VALID_TARGETS_BY_EXT[ext]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot convert '{ext}' to '{target}'. Allowed: {', '.join(sorted(VALID_TARGETS_BY_EXT[ext]))}.",
+        )
+        
     # ── Size check ─────────────────────────────────────────────────────────
     raw = await pdf.read()
     if len(raw) > MAX_FILE_BYTES:
@@ -96,11 +112,11 @@ async def convert_pdf(
         "status": JobStatus.QUEUED,
         "title": title,
         "author": author,
-        "output_ext": ".docx" if ext == ".pdf" else ".epub",
+        "output_ext": {"docx": ".docx", "epub": ".epub", "pdf": ".pdf"}[target],
     })
 
     # Pass the file extension so the worker knows which pipeline to run
-    convert_pdf_task.delay(job_id, file_b64, title, author, ext, subtitle, copyright, dedication, acknowledgements, foreword)
+    convert_pdf_task.delay(job_id, file_b64, title, author, ext, subtitle, copyright, dedication, acknowledgements, foreword, target)
 
     return JSONResponse(
         {"job_id": job_id, "status": JobStatus.QUEUED},
@@ -138,6 +154,9 @@ async def download_epub(job_id: str):
     if output_ext == ".docx":
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         filename   = f"{safe_title}.docx"
+    elif output_ext == ".pdf":
+        media_type = "application/pdf"
+        filename   = f"{safe_title}.pdf"
     else:
         media_type = "application/epub+zip"
         filename   = f"{safe_title}.epub"
