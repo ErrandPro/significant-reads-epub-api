@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="Document→EPUB API", version="3.1.0")
+app = FastAPI(title="Document→EPUB API", version="3.2.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
@@ -36,7 +36,7 @@ ALLOWED_DISPLAY    = "PDF, DOCX, or DOC"
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "3.1.0"}
+    return {"status": "ok", "version": "3.2.0"}
 
 
 @app.get("/ready")
@@ -55,8 +55,8 @@ def ready():
 async def convert_pdf(
     request: Request,
     pdf: UploadFile = File(...),
-    title:  str = Form(...),
-    author: str = Form(...),
+    title:  str = Form(default=""),
+    author: str = Form(default=""),
     subtitle: str = Form(default=""),
     copyright: str = Form(default=""),
     dedication: str = Form(default=""),
@@ -76,7 +76,7 @@ async def convert_pdf(
             detail=f"Unsupported file type '{ext}'. Please upload a {ALLOWED_DISPLAY} file.",
         )
 
-        # ── Target validation ───────────────────────────────────────────────
+    # ── Target validation ───────────────────────────────────────────────
     if target is None:
         target = "docx" if ext == ".pdf" else "epub"
 
@@ -90,7 +90,21 @@ async def convert_pdf(
             status_code=400,
             detail=f"Cannot convert '{ext}' to '{target}'. Allowed: {', '.join(sorted(VALID_TARGETS_BY_EXT[ext]))}.",
         )
-        
+
+    # ── Front matter is only required for EPUB (book) output ──────────
+    is_book = target == "epub"
+
+    if is_book:
+        if not title.strip():
+            raise HTTPException(status_code=400, detail="Title is required when converting to EPUB.")
+        if not author.strip():
+            raise HTTPException(status_code=400, detail="Author is required when converting to EPUB.")
+    else:
+        if not title.strip():
+            title = os.path.splitext(pdf.filename)[0]
+        if not author.strip():
+            author = "Unknown Author"
+
     # ── Size check ─────────────────────────────────────────────────────────
     raw = await pdf.read()
     if len(raw) > MAX_FILE_BYTES:
@@ -105,7 +119,7 @@ async def convert_pdf(
 
     logger.info(
         f"job_id={job_id} filename={pdf.filename} "
-        f"ext={ext} size={len(raw)}"
+        f"ext={ext} target={target} size={len(raw)}"
     )
 
     set_job(job_id, {
@@ -115,7 +129,7 @@ async def convert_pdf(
         "output_ext": {"docx": ".docx", "epub": ".epub", "pdf": ".pdf"}[target],
     })
 
-    # Pass the file extension so the worker knows which pipeline to run
+    # Pass the file extension and target so the worker knows which pipeline to run
     convert_pdf_task.delay(job_id, file_b64, title, author, ext, subtitle, copyright, dedication, acknowledgements, foreword, target)
 
     return JSONResponse(
