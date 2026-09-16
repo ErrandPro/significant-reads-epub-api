@@ -30,8 +30,8 @@ app.add_middleware(
 
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc"}
-ALLOWED_DISPLAY    = "PDF, DOCX, or DOC"
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png"}
+ALLOWED_DISPLAY    = "PDF, DOCX, DOC, JPG, JPEG, or PNG"
 
 
 @app.get("/health")
@@ -78,12 +78,20 @@ async def convert_pdf(
 
     # ── Target validation ───────────────────────────────────────────────
     if target is None:
-        target = "docx" if ext == ".pdf" else "epub"
+        if ext == ".pdf":
+            target = "docx"
+        elif ext in (".jpg", ".jpeg", ".png"):
+            target = "pdf"
+        else:
+            target = "epub"
 
     VALID_TARGETS_BY_EXT = {
-        ".pdf":  {"docx"},            # PDF can only go to DOCX today
+        ".pdf":  {"docx", "jpg"},     # PDF can now go to DOCX or JPG
         ".docx": {"epub", "pdf"},
         ".doc":  {"epub", "pdf"},
+        ".jpg":  {"pdf"},
+        ".jpeg": {"pdf"},
+        ".png":  {"pdf"},
     }
     if target not in VALID_TARGETS_BY_EXT[ext]:
         raise HTTPException(
@@ -126,7 +134,7 @@ async def convert_pdf(
         "status": JobStatus.QUEUED,
         "title": title,
         "author": author,
-        "output_ext": {"docx": ".docx", "epub": ".epub", "pdf": ".pdf"}[target],
+        "output_ext": {"docx": ".docx", "epub": ".epub", "pdf": ".pdf", "jpg": ".jpg"}[target],
     })
 
     # Pass the file extension and target so the worker knows which pipeline to run
@@ -171,6 +179,12 @@ async def download_epub(job_id: str):
     elif output_ext == ".pdf":
         media_type = "application/pdf"
         filename   = f"{safe_title}.pdf"
+    elif output_ext == ".jpg":
+        media_type = "image/jpeg"
+        filename   = f"{safe_title}.jpg"
+    elif output_ext == ".zip":
+        media_type = "application/zip"
+        filename   = f"{safe_title}.zip"
     else:
         media_type = "application/epub+zip"
         filename   = f"{safe_title}.epub"
