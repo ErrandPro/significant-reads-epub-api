@@ -3,11 +3,100 @@ import os
 import logging
 import subprocess
 import tempfile
+import zipfile
 from collections import Counter
 
 from pdfminer.high_level import extract_text
 
 logger = logging.getLogger(__name__)
+
+def convert_jpg_to_pdf(image_path: str) -> str:
+    """Convert a single image (JPG/PNG) to a one-page PDF."""
+    from PIL import Image
+
+    out_dir = tempfile.mkdtemp(prefix="img2pdf_")
+    basename = os.path.splitext(os.path.basename(image_path))[0]
+    out_path = os.path.join(out_dir, f"{basename}.pdf")
+
+    img = Image.open(image_path)
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    img.save(out_path, "PDF")
+
+    logger.info(f"image → pdf: {out_path}")
+    return out_path
+
+
+def convert_pdf_to_jpg(pdf_path: str) -> str:
+    """
+    Convert a PDF's pages to JPG images.
+    Returns a single .jpg if the PDF has 1 page, or a .zip of
+    numbered .jpg files if it has multiple pages.
+    """
+    from pdf2image import convert_from_path
+
+    out_dir = tempfile.mkdtemp(prefix="pdf2jpg_")
+    pages = convert_from_path(pdf_path, dpi=200)
+    basename = os.path.splitext(os.path.basename(pdf_path))[0]
+
+    if len(pages) == 1:
+        out_path = os.path.join(out_dir, f"{basename}.jpg")
+        pages[0].save(out_path, "JPEG")
+        logger.info(f"pdf → jpg (1 page): {out_path}")
+        return out_path
+
+    zip_path = os.path.join(out_dir, f"{basename}.zip")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for i, page in enumerate(pages, start=1):
+            page_path = os.path.join(out_dir, f"{basename}_page{i}.jpg")
+            page.save(page_path, "JPEG")
+            zf.write(page_path, arcname=os.path.basename(page_path))
+
+    logger.info(f"pdf → jpg ({len(pages)} pages, zipped): {zip_path}")
+    return zip_path
+
+
+def merge_pdfs(pdf_paths: list) -> str:
+    """Merge multiple PDFs, in the given order, into one PDF."""
+    import fitz  # PyMuPDF
+
+    out_dir = tempfile.mkdtemp(prefix="pdfmerge_")
+    out_path = os.path.join(out_dir, "merged.pdf")
+
+    merged = fitz.open()
+    for path in pdf_paths:
+        with fitz.open(path) as src:
+            merged.insert_pdf(src)
+    merged.save(out_path)
+    merged.close()
+
+    logger.info(f"merged {len(pdf_paths)} pdfs → {out_path}")
+    return out_path
+
+
+def split_pdf(pdf_path: str) -> str:
+    """Split a PDF into one file per page, returned as a .zip."""
+    import fitz  # PyMuPDF
+
+    out_dir = tempfile.mkdtemp(prefix="pdfsplit_")
+    basename = os.path.splitext(os.path.basename(pdf_path))[0]
+
+    src = fitz.open(pdf_path)
+    zip_path = os.path.join(out_dir, f"{basename}_split.zip")
+
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for i in range(len(src)):
+            single = fitz.open()
+            single.insert_pdf(src, from_page=i, to_page=i)
+            page_path = os.path.join(out_dir, f"{basename}_page{i+1}.pdf")
+            single.save(page_path)
+            single.close()
+            zf.write(page_path, arcname=os.path.basename(page_path))
+
+    page_count = len(src)
+    src.close()
+    logger.info(f"split {page_count} pages → {zip_path}")
+    return zip_path
 
 # ── XML namespaces used in DOCX/OOXML ────────────────────────────────────────
 
