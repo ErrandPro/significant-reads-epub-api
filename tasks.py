@@ -13,6 +13,8 @@ from processor import (
     convert_doc_to_docx,
     convert_pdf_to_docx,
     convert_docx_to_pdf,
+    convert_jpg_to_pdf,
+    convert_pdf_to_jpg,
 )
 from epub_builder import build_epub
 
@@ -68,7 +70,9 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
     with open(in_path, "wb") as f:
         f.write(base64.b64decode(file_b64))
     try:
-        if ext == ".pdf":
+        if ext == ".pdf" and target == "jpg":
+            epub_path = _pipeline_pdf_to_jpg(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
+        elif ext == ".pdf":
             epub_path = _pipeline_pdf(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
         elif ext in (".docx", ".doc") and target == "pdf":
             epub_path = _pipeline_docx_to_pdf(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
@@ -76,6 +80,8 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
             epub_path = _pipeline_docx(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
         elif ext == ".doc":
             epub_path = _pipeline_doc(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
+        elif ext in (".jpg", ".jpeg", ".png"):
+            epub_path = _pipeline_jpg_to_pdf(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
         else:
             raise ValueError(f"Unsupported file type: {ext}")
         if not os.path.exists(epub_path):
@@ -143,7 +149,23 @@ def _pipeline_docx_to_pdf(job_id: str, in_path: str, title: str, author: str, su
     pdf_path = convert_docx_to_pdf(in_path)
     logger.info(f"job_id={job_id} stage=done type=pdf")
     return pdf_path
-    
+
+def _pipeline_jpg_to_pdf(job_id: str, in_path: str, title: str, author: str, subtitle: str | None, copyright: str, dedication: str, acknowledgements: str, foreword: str, out_dir: str) -> str:
+    _update(job_id, status=JobStatus.BUILDING, progress=50, output_ext=".pdf")
+    logger.info(f"job_id={job_id} stage=jpg_to_pdf")
+    pdf_path = convert_jpg_to_pdf(in_path)
+    logger.info(f"job_id={job_id} stage=done type=pdf")
+    return pdf_path
+
+def _pipeline_pdf_to_jpg(job_id: str, in_path: str, title: str, author: str, subtitle: str | None, copyright: str, dedication: str, acknowledgements: str, foreword: str, out_dir: str) -> str:
+    _update(job_id, status=JobStatus.BUILDING, progress=50)
+    logger.info(f"job_id={job_id} stage=pdf_to_jpg")
+    jpg_path = convert_pdf_to_jpg(in_path)
+    actual_ext = os.path.splitext(jpg_path)[1]  # ".jpg" (single page) or ".zip" (multi-page)
+    _update(job_id, output_ext=actual_ext)
+    logger.info(f"job_id={job_id} stage=done type={actual_ext.lstrip('.')}")
+    return jpg_path
+
 # ── Extraction helpers — PDF ──────────────────────────────────────────────────
 
 def _try_rich_extraction(pdf_path: str, job_id: str) -> list[tuple[str, list[dict]]] | None:
