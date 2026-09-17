@@ -15,6 +15,8 @@ from processor import (
     convert_docx_to_pdf,
     convert_jpg_to_pdf,
     convert_pdf_to_jpg,
+    merge_pdfs,
+    split_pdf,
 )
 from epub_builder import build_epub
 
@@ -105,6 +107,87 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
         import shutil
         if os.path.exists(out_dir):
             shutil.rmtree(out_dir, ignore_errors=True)
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=10,
+    soft_time_limit=300,
+    time_limit=360,
+)
+def merge_pdf_task(self, job_id: str, files_b64: list[str]):
+    t0 = time.time()
+    tmp_dir = f"/tmp/merge_in_{job_id}"
+    os.makedirs(tmp_dir, exist_ok=True)
+    in_paths = []
+    try:
+        for i, b64 in enumerate(files_b64):
+            p = os.path.join(tmp_dir, f"file_{i}.pdf")
+            with open(p, "wb") as f:
+                f.write(base64.b64decode(b64))
+            in_paths.append(p)
+
+        _update(job_id, status=JobStatus.BUILDING, progress=50, output_ext=".pdf")
+        logger.info(f"job_id={job_id} stage=merge count={len(in_paths)}")
+        merged_path = merge_pdfs(in_paths)
+
+        if not os.path.exists(merged_path):
+            raise RuntimeError("Merged PDF was not created.")
+        with open(merged_path, "rb") as f:
+            merged_bytes = f.read()
+        store_epub(job_id, merged_bytes)
+        elapsed = round(time.time() - t0, 1)
+        _update(job_id, status=JobStatus.DONE, progress=100, elapsed_seconds=elapsed)
+        logger.info(f"job_id={job_id} status=done elapsed={elapsed}s")
+    except Exception as exc:
+        logger.error(f"job_id={job_id} error={exc}", exc_info=True)
+        _update(job_id, status=JobStatus.FAILED, error=str(exc))
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            _update(job_id, status=JobStatus.FAILED, error=f"Max retries exceeded: {exc}")
+    finally:
+        import shutil
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=10,
+    soft_time_limit=300,
+    time_limit=360,
+)
+def split_pdf_task(self, job_id: str, file_b64: str):
+    t0 = time.time()
+    in_path = f"/tmp/split_in_{job_id}.pdf"
+    with open(in_path, "wb") as f:
+        f.write(base64.b64decode(file_b64))
+    try:
+        _update(job_id, status=JobStatus.BUILDING, progress=50, output_ext=".zip")
+        logger.info(f"job_id={job_id} stage=split")
+        zip_path = split_pdf(in_path)
+
+        if not os.path.exists(zip_path):
+            raise RuntimeError("Split zip was not created.")
+        with open(zip_path, "rb") as f:
+            zip_bytes = f.read()
+        store_epub(job_id, zip_bytes)
+        elapsed = round(time.time() - t0, 1)
+        _update(job_id, status=JobStatus.DONE, progress=100, elapsed_seconds=elapsed)
+        logger.info(f"job_id={job_id} status=done elapsed={elapsed}s")
+    except Exception as exc:
+        logger.error(f"job_id={job_id} error={exc}", exc_info=True)
+        _update(job_id, status=JobStatus.FAILED, error=str(exc))
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            _update(job_id, status=JobStatus.FAILED, error=f"Max retries exceeded: {exc}")
+    finally:
+        if os.path.exists(in_path):
+            os.remove(in_path)
 
 
 # ── Pipelines ─────────────────────────────────────────────────────────────────
