@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from tasks import convert_pdf_task
+from tasks import convert_pdf_task, merge_pdf_task, split_pdf_task
 from store import get_job, set_job, get_epub, delete_epub, JobStatus
 
 logging.basicConfig(
@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="Document→EPUB API", version="3.2.0")
+app = FastAPI(title="Document→EPUB API", version="3.3.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
@@ -36,7 +36,7 @@ ALLOWED_DISPLAY    = "PDF, DOCX, DOC, JPG, JPEG, or PNG"
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "3.2.0"}
+    return {"status": "ok", "version": "3.3.0"}
 
 
 @app.get("/ready")
@@ -144,6 +144,68 @@ async def convert_pdf(
         {"job_id": job_id, "status": JobStatus.QUEUED},
         status_code=202,
     )
+
+
+@app.post("/merge")
+@limiter.limit("10/minute")
+async def merge_pdf(
+    request: Request,
+    files: list[UploadFile] = File(...),
+):
+    if len(files) < 2:
+        raise HTTPException(status_code=400, detail="Upload at least 2 PDF files to merge.")
+
+    files_b64 = []
+    total_size = 0
+    for f in files:
+        if not f.filename or os.path.splitext(f.filename.lower())[1] != ".pdf":
+            raise HTTPException(status_code=400, detail=f"'{f.filename}' is not a PDF file.")
+        raw = await f.read()
+        total_size += len(raw)
+        if total_size > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="Combined files exceed 50 MB limit.")
+        files_b64.append(base64.b64encode(raw).decode("utf-8"))
+
+    job_id = str(uuid.uuid4())
+    logger.info(f"job_id={job_id} action=merge files={len(files)} size={total_size}")
+
+    set_job(job_id, {
+        "status": JobStatus.QUEUED,
+        "title": "merged",
+        "output_ext": ".pdf",
+    })
+
+    merge_pdf_task.delay(job_id, files_b64)
+
+    return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)
+
+
+@app.post("/split")
+@limiter.limit("10/minute")
+async def split_pdf_endpoint(
+    request: Request,
+    pdf: UploadFile = File(...),
+):
+    if not pdf.filename or os.path.splitext(pdf.filename.lower())[1] != ".pdf":
+        raise HTTPException(status_code=400, detail="Please upload a PDF file.")
+
+    raw = await pdf.read()
+    if len(raw) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 50 MB limit.")
+
+    job_id = str(uuid.uuid4())
+    file_b64 = base64.b64encode(raw).decode("utf-8")
+    logger.info(f"job_id={job_id} action=split filename={pdf.filename} size={len(raw)}")
+
+    set_job(job_id, {
+        "status": JobStatus.QUEUED,
+        "title": os.path.splitext(pdf.filename)[0],
+        "output_ext": ".zip",
+    })
+
+    split_pdf_task.delay(job_id, file_b64)
+
+    return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)
 
 
 @app.get("/status/{job_id}")
