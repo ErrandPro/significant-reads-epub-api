@@ -30,8 +30,8 @@ app.add_middleware(
 
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png"}
-ALLOWED_DISPLAY    = "PDF, DOCX, DOC, JPG, JPEG, or PNG"
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".epub"}
+ALLOWED_DISPLAY    = "PDF, DOCX, DOC, EPUB, JPG, JPEG, or PNG"
 
 
 @app.get("/health")
@@ -82,6 +82,8 @@ async def convert_pdf(
             target = "docx"
         elif ext in (".jpg", ".jpeg", ".png"):
             target = "pdf"
+        elif ext == ".epub":
+            target = "docx"
         else:
             target = "epub"
 
@@ -92,6 +94,7 @@ async def convert_pdf(
         ".jpg":  {"pdf"},
         ".jpeg": {"pdf"},
         ".png":  {"pdf"},
+        ".epub": {"docx", "pdf"},
     }
     if target not in VALID_TARGETS_BY_EXT[ext]:
         raise HTTPException(
