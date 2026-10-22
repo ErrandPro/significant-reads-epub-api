@@ -272,7 +272,9 @@ def _pipeline_epub_convert(job_id: str, in_path: str, target: str, out_dir: str)
         timeout=240,
     )
     if result.returncode != 0:
-        raise RuntimeError("EPUB conversion failed: " + result.stderr[:300])
+        logger.error(f"job_id={job_id} pandoc_stderr={result.stderr[-2000:]}")
+        err_lines = [l for l in result.stderr.splitlines() if not l.startswith("WARNING")]
+        raise RuntimeError("EPUB conversion failed: " + "\n".join(err_lines)[-400:])
     logger.info(f"job_id={job_id} stage=done type={target}")
     return out_path
     
