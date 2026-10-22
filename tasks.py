@@ -2,6 +2,7 @@ import os
 import base64
 import logging
 import time
+import subprocess
 from celery import Celery
 from store import set_job, get_job, JobStatus, store_epub, EPUB_TTL_SECONDS
 from processor import (
@@ -74,6 +75,8 @@ def convert_pdf_task(self, job_id: str, file_b64: str, title: str, author: str, 
     try:
         if ext == ".pdf" and target == "jpg":
             epub_path = _pipeline_pdf_to_jpg(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
+        elif ext == ".epub" and target in ("docx", "pdf"):
+            epub_path = _pipeline_epub_convert(job_id, in_path, target, out_dir)
         elif ext == ".pdf":
             epub_path = _pipeline_pdf(job_id, in_path, title, author, subtitle, copyright, dedication, acknowledgements, foreword, out_dir)
         elif ext in (".docx", ".doc") and target == "pdf":
@@ -248,7 +251,31 @@ def _pipeline_pdf_to_jpg(job_id: str, in_path: str, title: str, author: str, sub
     _update(job_id, output_ext=actual_ext)
     logger.info(f"job_id={job_id} stage=done type={actual_ext.lstrip('.')}")
     return jpg_path
-
+    
+def _pipeline_epub_convert(job_id: str, in_path: str, target: str, out_dir: str) -> str:
+    _update(job_id, status=JobStatus.BUILDING, progress=40, output_ext="." + target)
+    logger.info(f"job_id={job_id} stage=epub_to_{target}")
+    out_path = os.path.join(out_dir, "converted." + target)
+    cmd = ["pandoc", in_path, "-o", out_path]
+    if target == "pdf":
+        media_dir = os.path.join(out_dir, "media")
+        cmd += [
+            "--pdf-engine=weasyprint",
+            "--extract-media=" + media_dir,
+            "--metadata", "title=Document",
+        ]
+    result = subprocess.run(
+        cmd,
+        cwd=out_dir,
+        capture_output=True,
+        text=True,
+        timeout=240,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("EPUB conversion failed: " + result.stderr[:300])
+    logger.info(f"job_id={job_id} stage=done type={target}")
+    return out_path
+    
 # ── Extraction helpers — PDF ──────────────────────────────────────────────────
 
 def _try_rich_extraction(pdf_path: str, job_id: str) -> list[tuple[str, list[dict]]] | None:
