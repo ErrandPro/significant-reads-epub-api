@@ -259,10 +259,22 @@ def _pipeline_epub_convert(job_id: str, in_path: str, target: str, out_dir: str)
     cmd = ["pandoc", in_path, "-o", out_path]
     if target == "pdf":
         media_dir = os.path.join(out_dir, "media")
+        # Minimal template: no auto-generated title/author/date page
+        template_path = os.path.join(out_dir, "plain.html")
+        with open(template_path, "w", encoding="utf-8") as tf:
+            tf.write(
+                '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n'
+                '<title>$pagetitle$</title>\n'
+                '<style>\n'
+                '@page { margin: 2cm; }\n'
+                'body { font-family: "DejaVu Serif", serif; line-height: 1.5; }\n'
+                'img { max-width: 100%; height: auto; }\n'
+                '</style>\n</head>\n<body>\n$body$\n</body>\n</html>\n'
+            )
         cmd += [
             "--pdf-engine=weasyprint",
             "--extract-media=" + media_dir,
-            "--metadata", "title=Document",
+            "--template=" + template_path,
         ]
     result = subprocess.run(
         cmd,
