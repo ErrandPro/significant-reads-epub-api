@@ -20,3 +20,4 @@ pdf2docx
 ebooklib==0.18
 # EPUB to PDF (HTML to PDF engine used by pandoc)
 weasyprint==62.3
+pydyf==0.10.0
