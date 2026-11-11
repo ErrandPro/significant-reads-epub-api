@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="Document→EPUB API", version="3.3.0")
+app = FastAPI(title="Document→EPUB API", version="3.3.1")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
@@ -34,9 +34,21 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".epub"}
 ALLOWED_DISPLAY    = "PDF, DOCX, DOC, EPUB, JPG, JPEG, or PNG"
 
 
+def enqueue(job_id: str, task, *args):
+    """Queue a Celery task. If the broker is down or broken, log it and return a clean 503."""
+    try:
+        task.delay(job_id, *args)
+    except Exception as e:
+        logger.error(f"job_id={job_id} failed to queue: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Conversion service unavailable. Try again shortly.",
+        )
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "3.3.0"}
+    return {"status": "ok", "version": "3.3.1"}
 
 
 @app.get("/ready")
@@ -141,7 +153,7 @@ async def convert_pdf(
     })
 
     # Pass the file extension and target so the worker knows which pipeline to run
-    convert_pdf_task.delay(job_id, file_b64, title, author, ext, subtitle, copyright, dedication, acknowledgements, foreword, target)
+    enqueue(job_id, convert_pdf_task, file_b64, title, author, ext, subtitle, copyright, dedication, acknowledgements, foreword, target)
 
     return JSONResponse(
         {"job_id": job_id, "status": JobStatus.QUEUED},
@@ -178,7 +190,7 @@ async def merge_pdf(
         "output_ext": ".pdf",
     })
 
-    merge_pdf_task.delay(job_id, files_b64)
+    enqueue(job_id, merge_pdf_task, files_b64)
 
     return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)
 
@@ -206,7 +218,7 @@ async def split_pdf_endpoint(
         "output_ext": ".zip",
     })
 
-    split_pdf_task.delay(job_id, file_b64)
+    enqueue(job_id, split_pdf_task, file_b64)
 
     return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)
 
