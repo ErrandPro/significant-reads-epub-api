@@ -4,8 +4,9 @@ python-multipart==0.0.9
 # Rate limiting
 slowapi==0.1.9
 # Job queue
-celery[redis]==5.4.0
-redis==5.2.1
+celery[redis]==5.7.0
+kombu==5.7.0
+redis==6.4.0
 # PDF extraction — 3-stage pipeline
 pdfminer.six==20231228
 pymupdf==1.24.10
